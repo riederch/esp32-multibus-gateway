@@ -113,7 +113,6 @@ private:
         const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
         if (info == nullptr) return "";
 
-        // PBKDF2 block 1, enough for one 32-byte SHA-256 derived key.
         uint8_t saltBlock[68] = {0};
         const size_t saltLen = salt.length();
         if (saltLen > 64) return "";
@@ -150,7 +149,7 @@ private:
         return out;
     }
 
-    Preferences prefs_;
+    mutable Preferences prefs_;
     String initialAdminPassword_;
 };
 
