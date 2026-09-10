@@ -36,19 +36,25 @@ public:
     }
 
     bool save(const DeviceConfig& config) {
-        if (validateConfig(config.components) != ConfigValidationResult::Ok) {
+        if (config.schemaVersion != DEVICE_CONFIG_SCHEMA_VERSION ||
+            validateConfig(config.components) != ConfigValidationResult::Ok) {
             return false;
         }
 
-        return prefs_.putUInt("schema", config.schemaVersion) > 0 &&
-               prefs_.putUChar("victron", static_cast<uint8_t>(config.components.victron)) > 0 &&
-               prefs_.putUChar("lora", static_cast<uint8_t>(config.components.lora)) > 0 &&
-               prefs_.putUChar("modbus", static_cast<uint8_t>(config.components.modbus)) > 0 &&
-               prefs_.putUChar("gnss", static_cast<uint8_t>(config.components.gnss)) > 0 &&
-               prefs_.putString("wifi_ssid", config.network.ssid) > 0 &&
-               prefs_.putString("wifi_pass", config.network.password) > 0 &&
-               prefs_.putString("hostname", config.network.hostname) > 0 &&
-               prefs_.putString("friendly", config.network.friendlyName) > 0;
+        // Preferences::putString() returns the number of bytes written. Zero is
+        // valid for an intentionally empty optional value, so save each field
+        // independently and verify it through the stored value where needed.
+        prefs_.putUInt("schema", config.schemaVersion);
+        prefs_.putUChar("victron", static_cast<uint8_t>(config.components.victron));
+        prefs_.putUChar("lora", static_cast<uint8_t>(config.components.lora));
+        prefs_.putUChar("modbus", static_cast<uint8_t>(config.components.modbus));
+        prefs_.putUChar("gnss", static_cast<uint8_t>(config.components.gnss));
+        prefs_.putString("wifi_ssid", config.network.ssid);
+        prefs_.putString("wifi_pass", config.network.password);
+        prefs_.putString("hostname", config.network.hostname);
+        prefs_.putString("friendly", config.network.friendlyName);
+
+        return prefs_.getUInt("schema", 0) == DEVICE_CONFIG_SCHEMA_VERSION;
     }
 
     void clear() {
