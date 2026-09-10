@@ -107,7 +107,10 @@ private:
         capabilities_.add("core.config");
         capabilities_.add("core.capabilities");
         capabilities_.add("core.data-sources");
+        capabilities_.add("core.transports");
         capabilities_.add("core.channels");
+        capabilities_.add("core.events");
+        capabilities_.add("core.commands");
         capabilities_.add("core.rules");
         capabilities_.add("core.history");
         capabilities_.add("core.security");

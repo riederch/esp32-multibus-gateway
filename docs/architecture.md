@@ -2,32 +2,37 @@
 
 ## Overview
 
-MultiBus Gateway uses a shared Core with independent protocol and hardware components.
+MultiBus Gateway uses a shared Core with independent protocol and hardware components. Components connect to the Core through explicit roles: **data sources**, **consumers** and **transports**.
 
 ```text
-+--------------------------------------------------------------+
-|                            Core                              |
-| config | channels | rules | history | security | Web UI     |
-| events | alarms   | time  | backup  | updates  | diagnostics|
-+-----------------------------+--------------------------------+
-                              |
-                +-------------+-------------+
-                |             |             |
-             Modbus        Victron         GNSS
-             source         source          source
-                |             |             |
-              RS485         VE.Bus         UART/PPS
-                \             |             /
-                 +------------+------------+
-                              |
-                         Channel model
-                              |
-          +-------------------+-------------------+
-          |                   |                   |
-       LoRaWAN              Rules              History
+                         +---------------------------+
+                         |           CORE            |
+                         | source registry           |
+                         | channel registry          |
+                         | event / command bus       |
+                         | rules / history / alarms  |
+                         | config / security / UI    |
+                         +-------------+-------------+
+                                       |
+        +------------------------------+------------------------------+
+        |                              |                              |
+        v                              v                              v
+ +--------------+              +--------------+               +--------------+
+ | Data sources |              |  Consumers   |               |  Transports  |
+ +------+-------+              +------+-------+               +------+-------+
+        |                             |                              |
+   +----+----+----+              +----+----+                   +-----+-----+
+   |         |    |              |         |                   |           |
+ Modbus   Victron GNSS          Rules    History               LoRa      future
+  RS485    VE.Bus UART/PPS       Web UI                         |
+                                                             +---+---+
+                                                             |       |
+                                                          LoRaWAN  Mesh
 ```
 
-The Core does not depend on Modbus, VE.Bus or GNSS wire formats. Each component translates its native protocol into normalized channels, events and commands.
+LoRa is a peer component connected directly to the Core. It is not attached to Victron, VE.Bus or any other data source.
+
+The Core does not depend on Modbus, VE.Bus, GNSS or LoRaWAN wire formats. Native protocol adapters translate between their wire protocol and normalized Core objects.
 
 ## Component state model
 
@@ -49,29 +54,55 @@ G=0  GNSS disabled
 
 `L=W` and `L=M` are mutually exclusive because they share the SX1262 radio.
 
-## Data-source abstraction
+## Roles
 
-Modbus and Victron are deliberately unified above their transport layer.
+### Data source
 
-A data source exposes:
+A data source exposes normalized points to the Core.
 
-- identity
-- health/online state
-- readable properties
-- writable properties where permitted
-- events
-- commands/actions
-
-Example source IDs:
+Examples:
 
 ```text
 modbus:12
 victron:vebus
-platform:power
 gnss:primary
+platform:power
 ```
 
-A source may expose any number of normalized points.
+A source exposes:
+
+- identity
+- online/health state
+- readable points
+- writable points where permitted
+- point metadata
+- source-specific events
+
+### Consumer
+
+Consumers use normalized points, channels and events without parsing native wire protocols.
+
+Examples:
+
+- rule engine
+- history
+- alarms
+- Web UI
+- diagnostics
+
+### Transport
+
+A transport carries Core data and commands to or from an external system.
+
+Examples:
+
+- LoRaWAN
+- Meshtastic
+- future MQTT or other IP transports
+
+A transport does not own the source values it carries. It encodes outbound Core objects and decodes inbound remote messages into validated Core commands/events.
+
+## Data-source abstraction
 
 Example points:
 
@@ -84,6 +115,8 @@ victron:vebus/ac.input.voltage
 gnss:primary/position.latitude
 platform:power/battery.voltage
 ```
+
+Victron is not represented internally as a fake Modbus slave. Both Modbus and Victron implement the same source abstraction above their native transport.
 
 ## Channel model
 
@@ -107,7 +140,7 @@ channel
   writable
 ```
 
-For Modbus sources, transport-specific fields are attached to the source binding:
+For Modbus sources, transport-specific fields belong to the source binding:
 
 ```text
 slave_id
@@ -119,23 +152,60 @@ signedness
 poll_interval
 ```
 
-For Victron sources, the binding references a Victron property rather than fabricating a Modbus slave address/register.
+For Victron sources, the binding references a Victron property instead of inventing a Modbus address.
 
-This separation means that LoRaWAN, the rule engine, history and the Web UI do not need to know whether a value originated from a Modbus register or VE.Bus.
+This separation means that LoRaWAN, rules, history and the Web UI do not need to know where a value originated.
 
-## Compatibility channels
+## LoRa transport
 
-The LoRaWAN FPort-85 compatibility profile uses the same logical channel representation as the Milesight UC100 V2 protocol.
+The LoRa component owns the onboard SX1262 and implements one active backend at a time.
 
-For Modbus-backed channels the mapping is direct.
+### LoRaWAN (`L=W`)
 
-For Victron-backed channels the MultiBus firmware allocates/configures a compatibility channel and feeds its normalized value into the same reporting/alarm/history encoder. The uplink format therefore remains compatible even though the underlying source is VE.Bus.
+LoRaWAN transports:
 
-Creating or changing a Victron binding is a MultiBus extension because the original compatibility protocol has no concept of a VE.Bus property. It must not redefine existing FPort-85 command identifiers.
+- channel telemetry
+- alarms/events
+- history/retransmission data
+- remote configuration
+- validated commands
+
+Inbound flow:
+
+```text
+LoRaWAN downlink
+    -> LoRa transport
+    -> protocol decoder
+    -> validated Core command/event
+    -> target source/service
+```
+
+Outbound flow:
+
+```text
+DataSource
+    -> normalized point
+    -> channel/event/history
+    -> LoRaWAN encoder
+    -> LoRa transport
+    -> SX1262
+```
+
+### Meshtastic (`L=M`)
+
+Meshtastic is an alternative transport backend for the same Core channel/event/command model. It is mutually exclusive with LoRaWAN on the onboard SX1262.
+
+## LoRaWAN compatibility channels
+
+The FPort-85 compatibility profile uses logical channels compatible with the Milesight UC100 V2 wire protocol.
+
+For Modbus-backed channels, the mapping is direct. For Victron-, GNSS- or platform-backed channels, MultiBus binds the native point to a logical compatibility channel and then uses the same telemetry/alarm/history encoder.
+
+Creating or changing a non-Modbus source binding uses the MultiBus extension protocol or Web UI because the compatibility command set has no representation for these native sources.
 
 ## Commands
 
-Commands are normalized in the Core and executed only through explicit source capabilities.
+Commands are normalized in the Core and executed only through explicit source/service capabilities.
 
 Examples:
 
@@ -168,9 +238,7 @@ Victron component
 `- VictronConnect BLE compatibility layer
 ```
 
-Its public interface is the generic source/channel API plus explicitly exposed Victron capabilities.
-
-No other component parses VE.Bus frames.
+Its public data interface is the generic source/channel API plus explicitly exposed Victron capabilities. No other component parses VE.Bus frames.
 
 ## Modbus component
 
@@ -205,43 +273,7 @@ GNSS exposes normalized properties including:
 - speed / course
 - PPS state where available
 
-Raw NMEA is kept inside the GNSS component.
-
-## LoRa component
-
-### LoRaWAN
-
-LoRaWAN provides two protocol surfaces:
-
-1. **FPort 85 compatibility profile** for the UC100 V2-compatible command and payload set.
-2. **MultiBus extension FPort** for features that cannot be represented by the compatibility protocol.
-
-The compatibility profile remains stable and extensions never reuse or reinterpret an existing compatibility command.
-
-### Meshtastic
-
-Meshtastic is an alternative transport backend for the same Core event/channel/command model. It is mutually exclusive with LoRaWAN on the onboard SX1262.
-
-## Core services
-
-The Core owns:
-
-- persistent configuration
-- data-source registry
-- channel registry
-- capability registry
-- event bus
-- rule engine
-- alarms
-- local history
-- store-and-forward/retransmission state
-- time/timezone/DST
-- Wi-Fi and Web UI
-- authentication and sessions
-- backup/restore
-- board UI and I/O abstraction
-- watchdog
-- firmware update/OTA infrastructure
+Raw NMEA remains inside the GNSS component.
 
 ## Rule engine
 
@@ -254,11 +286,35 @@ IF channel.pressure > 4.5
 THEN alarm("high_pressure")
 
 IF victron:vebus/battery.voltage < 11.5
-THEN lorawan.report("battery_low")
+THEN report(channel.battery_voltage)
 
 IF remote.command == "pump_stop"
 THEN write(modbus:12/pump.run, false)
 ```
+
+Rules do not call LoRaWAN or VE.Bus frame handlers directly.
+
+## Core services
+
+The Core owns:
+
+- persistent configuration
+- data-source registry
+- transport registry
+- channel registry
+- capability registry
+- event/command bus
+- rule engine
+- alarms
+- local history
+- store-and-forward/retransmission state
+- time/timezone/DST
+- Wi-Fi and Web UI
+- authentication and sessions
+- backup/restore
+- board UI and I/O abstraction
+- watchdog
+- firmware update/OTA infrastructure
 
 ## Platform services
 

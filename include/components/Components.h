@@ -5,6 +5,7 @@
 #include "core/CapabilityRegistry.h"
 #include "core/Component.h"
 #include "core/DataSource.h"
+#include "core/Transport.h"
 
 namespace multibus {
 
@@ -20,6 +21,7 @@ public:
         capabilities.add("victron.settings");
         capabilities.add("victron.usb.mk3");
         capabilities.add("victron.ble.victronconnect");
+        capabilities.add("source.victron");
         active_ = true;
         return true;
     }
@@ -37,14 +39,16 @@ private:
     bool active_ = false;
 };
 
-class LoRaComponent final : public Component {
+class LoRaComponent final : public Component, public Transport {
 public:
     void setMode(LoRaMode mode) { mode_ = mode; active_ = false; }
     const char* name() const override { return "lora"; }
+    const char* transportId() const override { return "lora"; }
 
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ == LoRaMode::Disabled) return true;
         if (mode_ == LoRaMode::Meshtastic) return false;
+        capabilities.add("transport.lora");
         capabilities.add("lora.lorawan");
         capabilities.add("lora.uplink");
         capabilities.add("lora.downlink");
@@ -56,6 +60,8 @@ public:
 
     void loop() override {}
     bool active() const { return active_; }
+    bool connected() const override { return false; }
+    bool send(const TransportEnvelope&) override { return false; }
 
 private:
     LoRaMode mode_ = LoRaMode::Disabled;
@@ -71,6 +77,7 @@ public:
     bool begin(CapabilityRegistry& capabilities) override {
         switch (mode_) {
             case ModbusMode::Master:
+                capabilities.add("source.modbus");
                 capabilities.add("modbus.master");
                 capabilities.add("modbus.read");
                 capabilities.add("modbus.write");
@@ -109,6 +116,7 @@ public:
 
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ != GnssMode::Enabled) return true;
+        capabilities.add("source.gnss");
         capabilities.add("gnss.position");
         capabilities.add("gnss.time");
         capabilities.add("gnss.motion");

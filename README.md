@@ -28,38 +28,58 @@ LoRaWAN and Meshtastic are mutually exclusive because they use the same SX1262 r
 
 ## Core model
 
-The firmware is built around a shared Core and independent components:
+Protocol adapters connect to the Core in distinct roles. Modbus, Victron, GNSS and platform I/O provide normalized data points. LoRa provides transport for telemetry, events, commands and remote configuration.
 
 ```text
-                    +-----------------------+
-                    |         Core          |
-                    | config / channels     |
-                    | rules / history       |
-                    | security / Web UI     |
-                    +-----------+-----------+
-                                |
-             +------------------+------------------+
-             |                  |                  |
-         DataSource         DataSource         DataSource
-          Modbus             Victron             GNSS
-             |                  |                  |
-           RS485              VE.Bus              UART
-                                |
-                         +------+------+
-                         | LoRa transport |
-                         | LoRaWAN / Mesh |
-                         +---------------+
+                         +---------------------------+
+                         |           CORE            |
+                         | sources / channels        |
+                         | events / commands         |
+                         | rules / history           |
+                         | config / security / UI    |
+                         +-------------+-------------+
+                                       |
+        +------------------------------+------------------------------+
+        |                              |                              |
+        v                              v                              v
+ +--------------+              +--------------+               +--------------+
+ | Data sources |              |  Consumers   |               |  Transports  |
+ +------+-------+              +------+-------+               +------+-------+
+        |                             |                              |
+   +----+----+----+              +----+----+                   +-----+-----+
+   |         |    |              |         |                   |           |
+ Modbus   Victron GNSS          Rules    History               LoRa      future
+  RS485    VE.Bus UART/PPS       Web UI                         |
+                                                             +---+---+
+                                                             |       |
+                                                          LoRaWAN  Mesh
 ```
 
-Modbus, Victron, GNSS and platform I/O expose values through a common data-source/channel abstraction. LoRaWAN, history, alarms, rules and the Web UI consume channels rather than bus-specific internals.
+A component can expose one or more roles, but LoRa is not a child of Victron or VE.Bus. All cross-component communication goes through Core abstractions.
+
+## Channel model
+
+A channel binds a normalized source point to reporting, alarm, history and remote-control behaviour.
+
+Examples:
+
+```text
+modbus:12/pressure.bar          -> channel 1
+victron:vebus/battery.voltage  -> channel 20
+gnss:primary/speed             -> channel 30
+```
+
+LoRaWAN, rules, history and the Web UI consume channels rather than bus-specific frame formats.
 
 ## LoRaWAN protocol
 
-The LoRaWAN interface provides a compatibility profile on **FPort 85** that follows the Milesight UC100 V2 wire protocol. Existing compatible payload decoders and downlink generators can therefore be reused for the standard command set.
+LoRaWAN uses OTAA as the primary activation method. Device identity consists of a stable DevEUI, a configured JoinEUI and an individual 128-bit AppKey.
 
-MultiBus-specific functions use a separate configurable extension FPort and never redefine FPort-85 commands. A Victron value can be bound to a normal compatibility channel and is then reported through the same channel/alarm/history framing as a Modbus-derived value.
+The compatibility profile on **FPort 85** follows the Milesight UC100 V2 wire protocol. Existing compatible payload decoders and downlink generators can therefore be reused for its standard command set. MultiBus-specific functions use a separate configurable extension FPort and never redefine FPort-85 commands.
 
-Milesight D2D radio operation is not part of the platform. D2D-related protocol identifiers remain reserved so they cannot collide with MultiBus extensions. Meshtastic is the optional mesh backend under `L=M`.
+A Victron, GNSS or platform value can be bound to a logical compatibility channel and is then reported through the same channel/alarm/history framing as a Modbus-derived value.
+
+Milesight D2D radio operation is not implemented. D2D-related protocol identifiers remain reserved. Meshtastic is the optional mesh backend under `L=M`.
 
 See `docs/lorawan-protocol.md`.
 
@@ -93,6 +113,12 @@ Wi-Fi and the local Web UI are the primary administration interface.
 
 USB-C remains available for flashing, service and recovery. When Victron is enabled, USB and BLE may additionally expose Victron compatibility functions.
 
+## Firmware distribution
+
+Every successful `main` build publishes `firmware.bin` and its SHA-256 digest as a GitHub Actions artifact. Version tags publish a GitHub Release containing a versioned firmware binary and digest.
+
+The Web UI firmware updater will accept the application `.bin` for OTA installation. Signed firmware/rollback policy remains a validation and hardening item.
+
 ## Board services
 
 The Core exposes board resources independently of protocol components:
@@ -112,8 +138,8 @@ The Core exposes board resources independently of protocol components:
 ## Documentation
 
 - `docs/specification.md` - product requirements
-- `docs/architecture.md` - component, channel and data-source architecture
-- `docs/lorawan-protocol.md` - LoRaWAN compatibility profile and extensions
+- `docs/architecture.md` - source, channel, transport and component architecture
+- `docs/lorawan-protocol.md` - LoRaWAN compatibility, identity and extensions
 - `docs/hardware.md` - hardware and electrical interfaces
 - `docs/rule-engine.md` - automation model
 - `docs/web-ui.md` - Wi-Fi, Web UI and OLED interaction
