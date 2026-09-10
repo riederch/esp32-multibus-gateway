@@ -1,33 +1,23 @@
 #include <Arduino.h>
-#include "core/AppConfig.h"
+#include "config.h"
 #include "core/Application.h"
 
 using namespace multibus;
 
 namespace {
 
-// Safe development default: all optional protocol components are disabled.
-// Runtime persistence / Web UI configuration will replace this static bootstrap
-// configuration in the next implementation step.
-AppConfig appConfig{
-    VictronMode::Disabled,
-    LoRaMode::Disabled,
-    ModbusMode::Disabled,
-    GnssMode::Disabled,
-};
-
-Application app(appConfig);
+Application app;
 bool appReady = false;
 
 } // namespace
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(cfg::SERIAL_MONITOR_BAUD);
     delay(300);
 
     Serial.println();
     Serial.println("ESP32 MultiBus Gateway");
-    Serial.println("Starting modular application core...");
+    Serial.println("Starting platform services...");
 
     appReady = app.begin();
     if (!appReady) {
@@ -40,5 +30,5 @@ void loop() {
         app.loop();
     }
 
-    delay(10);
+    delay(2);
 }
