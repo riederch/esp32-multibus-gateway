@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <vector>
 #include "AppConfig.h"
 #include "CapabilityRegistry.h"
 #include "ChannelRegistry.h"
@@ -10,6 +11,8 @@
 #include "LoRaWanIdentity.h"
 #include "SecurityStore.h"
 #include "components/Components.h"
+#include "lorawan/FPort85Codec.h"
+#include "modbus/ModbusChannelStore.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
@@ -21,6 +24,10 @@ public:
     bool begin() {
         if (!configStore_.begin()) {
             Serial.println("Failed to open configuration store.");
+            return false;
+        }
+        if (!modbusChannelStore_.begin()) {
+            Serial.println("Failed to open Modbus channel store.");
             return false;
         }
 
@@ -64,7 +71,13 @@ public:
         }
 
         configureComponents();
+        lora_.setDownlinkHandler(&Application::downlinkThunk, this);
         registerCoreCapabilities();
+
+        if (!loadModbusChannels()) {
+            Serial.println("Failed to load persisted Modbus channels.");
+            return false;
+        }
 
         if (!beginComponent(victron_)) return false;
         if (!beginComponent(lora_)) return false;
@@ -111,6 +124,88 @@ public:
     const BoardService& board() const { return board_; }
 
 private:
+    static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
+        if (context == nullptr) return false;
+        return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
+    }
+
+    bool handleLoRaDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
+        if (fport != lorawan::kCompatibilityFPort || payload == nullptr || length == 0) return false;
+
+        std::vector<lorawan::ModbusChannelCommand> commands;
+        size_t offset = 0;
+        while (offset < length) {
+            lorawan::CommandHeader header;
+            if (!lorawan::FPort85Codec::readHeader(payload + offset, length - offset, header)) return false;
+            if (header.channelId != lorawan::FPort85Codec::kSystemChannel ||
+                header.type != lorawan::FPort85Codec::kModbusChannelConfigType) {
+                return false;
+            }
+
+            lorawan::ModbusChannelCommand command;
+            size_t consumed = 0;
+            if (lorawan::FPort85Codec::decodeModbusChannelCommand(
+                    payload + offset, length - offset, command, consumed) != lorawan::DecodeStatus::Ok ||
+                consumed == 0) {
+                return false;
+            }
+            commands.push_back(command);
+            offset += consumed;
+        }
+
+        for (const auto& command : commands) {
+            if (!applyModbusChannelCommand(command)) return false;
+        }
+        return true;
+    }
+
+    bool applyModbusChannelCommand(const lorawan::ModbusChannelCommand& command) {
+        switch (command.operation) {
+            case lorawan::ModbusChannelOperation::Upsert:
+                if (!modbusChannelStore_.save(command.channel)) return false;
+                if (!modbus_.upsertChannel(command.channel)) return false;
+                return bindCompatibilityChannel(command.channel);
+
+            case lorawan::ModbusChannelOperation::Remove:
+                if (!modbusChannelStore_.remove(command.channel.slot)) return false;
+                modbus_.removeChannel(command.channel.slot);
+                channels_.removeCompatibilitySlot(command.channel.slot);
+                return true;
+
+            case lorawan::ModbusChannelOperation::SetName: {
+                const modbus::ChannelConfig* current = modbus_.channelForSlot(command.channel.slot);
+                if (current == nullptr) return false;
+                modbus::ChannelConfig updated = *current;
+                const size_t nameLength = strnlen(command.channel.name, modbus::kMaxChannelNameLength);
+                if (!modbus::setChannelName(updated, command.channel.name, nameLength)) return false;
+                if (!modbusChannelStore_.save(updated)) return false;
+                return modbus_.upsertChannel(updated);
+            }
+        }
+        return false;
+    }
+
+    bool loadModbusChannels() {
+        std::vector<modbus::ChannelConfig> stored;
+        if (!modbusChannelStore_.load(stored)) return false;
+        for (const auto& channel : stored) {
+            if (!modbus_.upsertChannel(channel) || !bindCompatibilityChannel(channel)) return false;
+        }
+        return true;
+    }
+
+    bool bindCompatibilityChannel(const modbus::ChannelConfig& channel) {
+        ChannelBinding binding;
+        binding.channelId = static_cast<uint16_t>(channel.slot) + 1U;
+        binding.sourceId = modbus_.sourceId();
+        binding.pointId = ModbusComponent::pointIdForSlot(channel.slot);
+        binding.enabled = true;
+        binding.writable = false;
+        binding.compatibilityMapped = true;
+        binding.compatibilitySlot = channel.slot;
+        return channels_.upsert(binding);
+    }
+
     void configureComponents() {
         victron_.setMode(config_.components.victron);
         lora_.setMode(config_.components.lora);
@@ -151,6 +246,7 @@ private:
         Serial.printf("  DevEUI: %s\n", devEui().c_str());
         Serial.printf("  JoinEUI: %s\n", config_.lorawan.joinEui.c_str());
         Serial.printf("  LoRaWAN provisioned: %s\n", lora_.provisioned() ? "yes" : "no");
+        Serial.printf("  Compatibility channels: %u\n", static_cast<unsigned>(channels_.size()));
         Serial.printf("  Wi-Fi: %s\n", network_.apActive() ? "commissioning AP" : "client");
         Serial.printf("  Address: %s\n", network_.address().toString().c_str());
         Serial.println("Capabilities:");
@@ -167,6 +263,7 @@ private:
     CapabilityRegistry capabilities_;
     ChannelRegistry channels_;
     ConfigStore configStore_;
+    modbus::ModbusChannelStore modbusChannelStore_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;

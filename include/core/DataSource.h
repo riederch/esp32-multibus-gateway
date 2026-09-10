@@ -51,6 +51,8 @@ struct ChannelBinding {
     double offset = 0.0;
     bool enabled = true;
     bool writable = false;
+    bool compatibilityMapped = false;
+    uint8_t compatibilitySlot = 0;
 };
 
 } // namespace multibus

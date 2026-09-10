@@ -20,6 +20,21 @@ public:
             if (error) *error = "missing-source-binding";
             return false;
         }
+        if (binding.compatibilityMapped && binding.compatibilitySlot >= kCompatibilitySlots) {
+            if (error) *error = "invalid-compatibility-slot";
+            return false;
+        }
+
+        if (binding.compatibilityMapped) {
+            for (const auto& current : channels_) {
+                if (current.compatibilityMapped &&
+                    current.compatibilitySlot == binding.compatibilitySlot &&
+                    current.channelId != binding.channelId) {
+                    if (error) *error = "compatibility-slot-in-use";
+                    return false;
+                }
+            }
+        }
 
         for (auto& current : channels_) {
             if (current.channelId == binding.channelId) {
@@ -42,6 +57,16 @@ public:
         return false;
     }
 
+    bool removeCompatibilitySlot(uint8_t slot) {
+        for (auto it = channels_.begin(); it != channels_.end(); ++it) {
+            if (it->compatibilityMapped && it->compatibilitySlot == slot) {
+                channels_.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
     ChannelBinding* find(uint16_t channelId) {
         for (auto& channel : channels_) {
             if (channel.channelId == channelId) return &channel;
@@ -52,6 +77,20 @@ public:
     const ChannelBinding* find(uint16_t channelId) const {
         for (const auto& channel : channels_) {
             if (channel.channelId == channelId) return &channel;
+        }
+        return nullptr;
+    }
+
+    ChannelBinding* findCompatibilitySlot(uint8_t slot) {
+        for (auto& channel : channels_) {
+            if (channel.compatibilityMapped && channel.compatibilitySlot == slot) return &channel;
+        }
+        return nullptr;
+    }
+
+    const ChannelBinding* findCompatibilitySlot(uint8_t slot) const {
+        for (const auto& channel : channels_) {
+            if (channel.compatibilityMapped && channel.compatibilitySlot == slot) return &channel;
         }
         return nullptr;
     }
