@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <esp_system.h>
+#include <initializer_list>
+#include "core/BackupService.h"
 #include "core/ConfigStore.h"
 #include "core/DeviceConfig.h"
 #include "core/SecurityStore.h"
@@ -32,6 +34,8 @@ public:
         server_.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
         server_.on("/api/config/components", HTTP_POST, [this]() { handleComponentConfig(); });
         server_.on("/api/config/network", HTTP_POST, [this]() { handleNetworkConfig(); });
+        server_.on("/api/system/backup", HTTP_GET, [this]() { handleBackupDownload(); });
+        server_.on("/api/system/restore", HTTP_POST, [this]() { handleBackupRestore(); });
         server_.on("/api/reboot", HTTP_POST, [this]() { handleReboot(); });
         server_.onNotFound([this]() { handleNotFound(); });
 
@@ -53,7 +57,8 @@ private:
                "<title>" + title + "</title>"
                "<style>body{font-family:sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem}"
                "fieldset{margin:1rem 0;padding:1rem}label{display:block;margin:.6rem 0}"
-               "input,select,button{font:inherit;padding:.45rem}code{background:#eee;padding:.15rem .3rem}</style>"
+               "input,select,button{font:inherit;padding:.45rem}code{background:#eee;padding:.15rem .3rem}"
+               ".warning{background:#fff3cd;padding:.7rem;border-radius:.3rem}</style>"
                "</head><body>";
     }
 
@@ -65,8 +70,7 @@ private:
 
     bool requireAuth() {
         if (authenticated()) return true;
-        server_.sendHeader("Location", "/");
-        server_.send(303, "text/plain", "Authentication required");
+        server_.send(401, "text/plain", "Authentication required");
         return false;
     }
 
@@ -125,15 +129,25 @@ private:
                 "<label>Friendly name <input name='friendly' value='" + escape(config_->network.friendlyName) + "'></label>"
                 "<button type='submit'>Save network and reboot</button></form></fieldset>";
 
+        html += "<fieldset><legend>Backup / Restore</legend>"
+                "<p class='warning'>Current backup files contain configuration secrets in clear text. Store them securely.</p>"
+                "<p><a href='/api/system/backup'>Download configuration backup</a></p>"
+                "<label>Restore backup <input id='restoreFile' type='file' accept='application/json,.json'></label>"
+                "<button type='button' onclick='restoreBackup()'>Upload and restore</button>"
+                "<pre id='restoreStatus'></pre></fieldset>";
+
         html += "<form method='get' action='/change-password'><button>Change admin password</button></form> "
                 "<form method='post' action='/logout' style='display:inline'><button>Logout</button></form> "
                 "<form method='post' action='/api/reboot' style='display:inline'><button>Reboot</button></form>";
-        html += "</body></html>";
+        html += "<script>async function restoreBackup(){const f=document.getElementById('restoreFile').files[0];"
+                "if(!f)return;const s=document.getElementById('restoreStatus');s.textContent='Uploading...';"
+                "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});"
+                "s.textContent=await r.text();}</script></body></html>";
         server_.send(200, "text/html", html);
     }
 
     void handleLogin() {
-        if (millis() < lockUntil_) {
+        if (static_cast<int32_t>(millis() - lockUntil_) < 0) {
             server_.send(429, "text/plain", "Too many attempts; try again later.");
             return;
         }
@@ -245,6 +259,45 @@ private:
         scheduleReboot();
     }
 
+    void handleBackupDownload() {
+        if (!requireAuth()) return;
+        String backup;
+        if (!backupService_.exportConfig(*config_, backup)) {
+            server_.send(500, "text/plain", "Failed to generate backup");
+            return;
+        }
+        server_.sendHeader("Content-Disposition", "attachment; filename=multibus-backup.json");
+        server_.sendHeader("Cache-Control", "no-store");
+        server_.send(200, "application/json", backup);
+    }
+
+    void handleBackupRestore() {
+        if (!requireAuth()) return;
+        const String body = server_.arg("plain");
+        if (body.isEmpty()) {
+            server_.send(400, "text/plain", "Backup payload is empty");
+            return;
+        }
+
+        DeviceConfig restored;
+        String error;
+        if (!backupService_.importConfig(body, restored, error)) {
+            server_.send(400, "text/plain", "Backup rejected: " + error);
+            return;
+        }
+
+        if (!configStore_->save(restored)) {
+            server_.send(500, "text/plain", "Validated backup could not be persisted");
+            return;
+        }
+
+        *config_ = restored;
+        sessionToken_ = randomToken();
+        setSessionCookie();
+        server_.send(200, "text/plain", "Backup restored successfully. Rebooting...");
+        scheduleReboot();
+    }
+
     void handleReboot() {
         if (!requireAuth()) return;
         server_.send(200, "text/plain", "Rebooting...");
@@ -308,6 +361,7 @@ private:
     }
 
     WebServer server_{80};
+    BackupService backupService_;
     DeviceConfig* config_ = nullptr;
     ConfigStore* configStore_ = nullptr;
     SecurityStore* security_ = nullptr;
