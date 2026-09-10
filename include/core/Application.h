@@ -3,9 +3,11 @@
 #include <Arduino.h>
 #include "AppConfig.h"
 #include "CapabilityRegistry.h"
+#include "ChannelRegistry.h"
 #include "ConfigStore.h"
 #include "DeviceConfig.h"
 #include "DeviceIdentity.h"
+#include "LoRaWanIdentity.h"
 #include "SecurityStore.h"
 #include "components/Components.h"
 #include "services/BoardService.h"
@@ -22,14 +24,23 @@ public:
             return false;
         }
 
+        bool configChanged = false;
         if (!configStore_.load(config_)) {
             config_ = DeviceConfig{};
             config_.network.hostname = defaultHostname();
             config_.network.friendlyName = "MultiBus Gateway";
-            if (!configStore_.save(config_)) {
-                Serial.println("Failed to initialize default configuration.");
-                return false;
-            }
+            configChanged = true;
+        }
+
+        if (ensureLoRaWanConfig(config_.lorawan)) {
+            configChanged = true;
+        }
+        if (configStore_.requiresSave()) {
+            configChanged = true;
+        }
+        if (configChanged && !configStore_.save(config_)) {
+            Serial.println("Failed to initialize or migrate configuration.");
+            return false;
         }
 
         if (!security_.begin()) {
@@ -45,6 +56,10 @@ public:
         const auto validation = validateConfig(config_.components);
         if (validation != ConfigValidationResult::Ok) {
             Serial.printf("Configuration rejected: %s\n", toString(validation));
+            return false;
+        }
+        if (!validateLoRaWanConfig(config_.lorawan)) {
+            Serial.println("LoRaWAN configuration rejected.");
             return false;
         }
 
@@ -90,6 +105,7 @@ public:
 
     const DeviceConfig& config() const { return config_; }
     const CapabilityRegistry& capabilities() const { return capabilities_; }
+    const ChannelRegistry& channels() const { return channels_; }
     const SecurityStore& security() const { return security_; }
     const NetworkService& network() const { return network_; }
     const BoardService& board() const { return board_; }
@@ -98,6 +114,7 @@ private:
     void configureComponents() {
         victron_.setMode(config_.components.victron);
         lora_.setMode(config_.components.lora);
+        lora_.setProvisioning(config_.lorawan, devEui());
         modbus_.setMode(config_.components.modbus);
         gnss_.setMode(config_.components.gnss);
     }
@@ -131,6 +148,9 @@ private:
         Serial.printf("  L: %s\n", toString(config_.components.lora));
         Serial.printf("  M: %s\n", toString(config_.components.modbus));
         Serial.printf("  G: %s\n", toString(config_.components.gnss));
+        Serial.printf("  DevEUI: %s\n", devEui().c_str());
+        Serial.printf("  JoinEUI: %s\n", config_.lorawan.joinEui.c_str());
+        Serial.printf("  LoRaWAN provisioned: %s\n", lora_.provisioned() ? "yes" : "no");
         Serial.printf("  Wi-Fi: %s\n", network_.apActive() ? "commissioning AP" : "client");
         Serial.printf("  Address: %s\n", network_.address().toString().c_str());
         Serial.println("Capabilities:");
@@ -145,6 +165,7 @@ private:
 
     DeviceConfig config_;
     CapabilityRegistry capabilities_;
+    ChannelRegistry channels_;
     ConfigStore configStore_;
     SecurityStore security_;
     BoardService board_;

@@ -3,12 +3,13 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "DeviceConfig.h"
+#include "LoRaWanIdentity.h"
 
 namespace multibus {
 
 class BackupService {
 public:
-    static constexpr uint32_t BACKUP_SCHEMA_VERSION = 1;
+    static constexpr uint32_t BACKUP_SCHEMA_VERSION = 2;
 
     bool exportConfig(const DeviceConfig& config, String& output) const {
         JsonDocument doc;
@@ -31,6 +32,12 @@ public:
         network["password"] = config.network.password;
         network["hostname"] = config.network.hostname;
         network["friendly_name"] = config.network.friendlyName;
+
+        JsonObject lorawan = doc["lorawan"].to<JsonObject>();
+        lorawan["join_eui"] = config.lorawan.joinEui;
+        lorawan["app_key"] = config.lorawan.appKey;
+        lorawan["class_c"] = config.lorawan.classC;
+        lorawan["extension_fport"] = config.lorawan.extensionFPort;
 
         output = "";
         serializeJsonPretty(doc, output);
@@ -68,7 +75,8 @@ public:
 
         const JsonObjectConst components = doc["components"].as<JsonObjectConst>();
         const JsonObjectConst network = doc["network"].as<JsonObjectConst>();
-        if (components.isNull() || network.isNull()) {
+        const JsonObjectConst lorawan = doc["lorawan"].as<JsonObjectConst>();
+        if (components.isNull() || network.isNull() || lorawan.isNull()) {
             error = "missing-configuration-section";
             return false;
         }
@@ -89,9 +97,18 @@ public:
         next.network.hostname = String(network["hostname"] | "");
         next.network.friendlyName = String(network["friendly_name"] | "");
 
+        next.lorawan.joinEui = String(lorawan["join_eui"] | "");
+        next.lorawan.appKey = String(lorawan["app_key"] | "");
+        next.lorawan.classC = lorawan["class_c"] | true;
+        next.lorawan.extensionFPort = lorawan["extension_fport"] | LORAWAN_DEFAULT_EXTENSION_FPORT;
+
         const auto validation = validateConfig(next.components);
         if (validation != ConfigValidationResult::Ok) {
             error = toString(validation);
+            return false;
+        }
+        if (!validateLoRaWanConfig(next.lorawan)) {
+            error = "invalid-lorawan-config";
             return false;
         }
 

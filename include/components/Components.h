@@ -5,6 +5,8 @@
 #include "core/CapabilityRegistry.h"
 #include "core/Component.h"
 #include "core/DataSource.h"
+#include "core/DeviceConfig.h"
+#include "core/LoRaWanIdentity.h"
 #include "core/Transport.h"
 
 namespace multibus {
@@ -42,30 +44,47 @@ private:
 class LoRaComponent final : public Component, public Transport {
 public:
     void setMode(LoRaMode mode) { mode_ = mode; active_ = false; }
+
+    void setProvisioning(const LoRaWanConfig& config, const String& devEuiValue) {
+        lorawan_ = config;
+        devEui_ = devEuiValue;
+    }
+
     const char* name() const override { return "lora"; }
     const char* transportId() const override { return "lora"; }
 
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ == LoRaMode::Disabled) return true;
         if (mode_ == LoRaMode::Meshtastic) return false;
+
         capabilities.add("transport.lora");
         capabilities.add("lora.lorawan");
         capabilities.add("lora.uplink");
         capabilities.add("lora.downlink");
         capabilities.add("lora.compat.fport85");
         capabilities.add("lora.extensions");
+        capabilities.add("lora.otaa");
+
         active_ = true;
+        provisioned_ = isHexString(devEui_, 16) && validateLoRaWanConfig(lorawan_);
         return true;
     }
 
     void loop() override {}
     bool active() const { return active_; }
+    bool provisioned() const { return provisioned_; }
     bool connected() const override { return false; }
     bool send(const TransportEnvelope&) override { return false; }
 
+    const String& devEuiValue() const { return devEui_; }
+    const LoRaWanConfig& provisioning() const { return lorawan_; }
+
 private:
     LoRaMode mode_ = LoRaMode::Disabled;
+    LoRaWanConfig lorawan_;
+    String devEui_;
     bool active_ = false;
+    bool provisioned_ = false;
 };
 
 class ModbusComponent final : public Component, public DataSource {
