@@ -7,7 +7,7 @@
 #include "DeviceConfig.h"
 #include "DeviceIdentity.h"
 #include "SecurityStore.h"
-#include "components/ComponentStubs.h"
+#include "components/Components.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
@@ -106,6 +106,8 @@ private:
         capabilities_.clear();
         capabilities_.add("core.config");
         capabilities_.add("core.capabilities");
+        capabilities_.add("core.data-sources");
+        capabilities_.add("core.channels");
         capabilities_.add("core.rules");
         capabilities_.add("core.history");
         capabilities_.add("core.security");

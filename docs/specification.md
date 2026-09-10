@@ -1,299 +1,270 @@
-# MultiBus Gateway V1 Specification
+# MultiBus Gateway Specification
 
-## Goal
+## Purpose
 
-Build a modular ESP32-S3 based multi-purpose fieldbus and LoRa platform on the Heltec HTIT-WB32LAF V4.2 reference board.
+MultiBus Gateway is an ESP32-S3 based field gateway combining LoRaWAN, RS485/Modbus, Victron VE.Bus, GNSS, local automation and board I/O behind a common channel model.
 
-The platform is composed of independent functional components around a shared Core. Victron is optional and must not define the overall architecture.
-
-## Component model
+## Component modes
 
 ```text
-V = [1,0]
-L = [W,M,0]
-M = [M,S,0]
-G = [1,0]
+V = [1,0]       Victron enabled / disabled
+L = [W,M,0]     LoRaWAN / Meshtastic / disabled
+M = [M,S,0]     Modbus RTU master / slave / disabled
+G = [1,0]       GNSS enabled / disabled
 ```
 
-Meaning:
-
-```text
-V=1  complete Victron cocoon enabled
-V=0  Victron disabled
-
-L=W  LoRaWAN
-L=M  Meshtastic [backlog]
-L=0  LoRa disabled
-
-M=M  Modbus RTU master
-M=S  Modbus RTU slave
-M=0  Modbus disabled
-
-G=1  GNSS enabled
-G=0  GNSS disabled
-```
-
-LoRaWAN and Meshtastic are mutually exclusive because they share the SX1262.
+LoRaWAN and Meshtastic are mutually exclusive because they use the same SX1262 radio.
 
 ## Reference hardware
 
 - Heltec HTIT-WB32LAF V4.2 / WiFi LoRa 32 V4.2
 - ESP32-S3
 - SX1262 EU868
-- onboard OLED
-- onboard user button / LEDs
-- native USB-C
+- OLED display
 - Wi-Fi / BLE
-- BAT / SOL facilities of the module
-- optional external GNSS module
-- external isolated RS485 transceiver for Modbus
-- external isolated RS485 transceiver for VE.Bus when Victron is used
+- native USB-C
+- BAT / SOL interfaces
+- external GNSS interface
+- isolated RS485 interface for Modbus
+- isolated RS485 interface for VE.Bus
 
-## External connectors
+## External interfaces
 
 ### Field terminal
 
 ```text
-V+  external DC supply input
-V-  external DC supply return
-A   RS485 / Modbus A
-B   RS485 / Modbus B
+V+  5-30 V DC supply
+V-  supply return
+A   Modbus RS485 A
+B   Modbus RS485 B
 ```
-
-Nominal target supply range: **5-30 V DC**.
 
 ### Victron RJ45
 
-Optional Victron-compatible VE.Bus connector. It carries VE.Bus data and may also supply the gateway through VE.Bus V+/GND when validated.
+Optional VE.Bus interface carrying VE.Bus A/B and, where validated, an optional power source from VE.Bus V+/GND.
 
-## Power
+### USB-C
 
-The gateway must support either:
-
-- external 5-30 V supply on V+/V-, or
-- supply from VE.Bus V+/GND.
-
-The two inputs must be protected and power-ORed/isolated so they cannot back-feed each other.
+- flashing
+- service / diagnostics
+- recovery
+- firmware update
+- optional Victron MK2/MK3 compatibility transport
 
 ## Core services
 
-The Core owns:
+The Core provides:
 
 - configuration persistence
+- data-source registry
+- channel registry
 - capability registry
-- event/property bus
-- generic rule engine
+- event bus
+- rule engine
 - alarms
 - local history
 - store-and-forward / retransmission
 - time / timezone / DST
-- Wi-Fi
-- Web UI/backend
-- authentication/sessions
-- backup/restore
-- display/button/LED services
+- Wi-Fi and Web UI
+- authentication and sessions
+- backup / restore
+- display / button / LED services
 - board I/O abstraction
 - watchdog
-- firmware update / OTA infrastructure
+- firmware update / OTA
 
-## Victron component
+## Unified source and channel model
 
-When `V=1`, the Victron block provides the full Victron-specific experience:
+Modbus, Victron, GNSS and platform I/O expose normalized data points through the same source interface.
 
-- direct VE.Bus communication
-- telemetry and settings access
-- controlled settings writes
-- optional STB / Panel Detect support
-- VictronConnect BLE / Smart-Dongle compatibility research
-- MK2/MK3 protocol engine
-- native USB MK3-USB compatibility research
+Examples:
 
-The rest of the platform accesses Victron only through defined properties, events and commands.
+```text
+modbus:12/pressure.bar
+modbus:12/flow.m3h
+victron:vebus/battery.voltage
+victron:vebus/charger.current
+gnss:primary/position.latitude
+platform:power/battery.voltage
+```
 
-## LoRa component
+A channel references one source point and adds reporting, scaling, alarm, history and write-policy metadata.
 
-### LoRaWAN (`L=W`)
+LoRaWAN, rules, history and the Web UI operate on channels instead of bus-specific protocol details.
 
-Target V1 capabilities:
+## Modbus
 
-- EU868
-- OTAA and ABP where supported by the stack
-- Class A and C; Class C preferred for stationary externally powered use cases
-- periodic telemetry uplinks
-- event/alarm uplinks
-- downlink commands
-- remote configuration
-- store-and-forward integration
-- retransmission
-- time synchronization where supported
-- firmware update strategy / FUOTA research
+### Master mode
 
-### Meshtastic (`L=M`)
-
-Backlog only. Intended later as an alternative local/mesh transport and conceptual replacement for Milesight D2D use cases. No Milesight D2D protocol compatibility is planned.
-
-## Modbus component
-
-### Master (`M=M`)
-
-- configurable baud/parity/stop bits
+- configurable baud, parity and stop bits
 - multiple slave devices
-- configurable channels
-- polling intervals
-- read/write
-- raw/transparent pass-through capability
-- data type conversion
-- byte/word order conversion
-- scaling and offsets
+- coils, discrete inputs, input registers and holding registers
+- supported write functions
+- configurable polling
+- retry and timeout policy
+- INT16/UINT16, INT32/UINT32, FLOAT32, INT64/UINT64 and FLOAT64 where practical
+- configurable byte/word order
+- scale and offset
+- raw/transparent RS485 access
 
-### Slave (`M=S`)
+### Slave mode
 
 - configurable slave ID
-- virtual register map
-- mapping of internal properties to registers/coils where suitable
-- controlled writable mappings to internal commands
+- virtual register/coil map
+- mappings from normalized channels to Modbus objects
+- writable mappings only for explicitly allowed commands
 
-## GNSS component
+## Victron
 
-When `G=1`, expose normalized GNSS properties:
+The Victron component owns:
+
+- VE.Bus transport and frame handling
+- telemetry and settings
+- controlled writes
+- STB / Panel Detect support where implemented
+- MK2/MK3 protocol engine
+- USB MK3 compatibility layer
+- VictronConnect BLE compatibility layer
+
+Victron values and settings are exposed as normalized source points. They can be mapped to the same channel model as Modbus values.
+
+## LoRaWAN
+
+- EU868
+- OTAA
+- ABP where required by the selected stack
+- Class A and Class C
+- periodic telemetry
+- alarms and events
+- downlink commands
+- remote configuration
+- history retrieval
+- retransmission / store-and-forward
+- time synchronization where supported
+- firmware update strategy / FUOTA where feasible
+
+The standard compatibility profile uses FPort 85 and is wire-compatible with the Milesight UC100 V2 protocol. MultiBus extensions use a separate configurable FPort and do not redefine compatibility commands.
+
+## GNSS
+
+Expose normalized:
 
 - fix state
-- latitude/longitude
+- latitude / longitude
 - altitude
 - UTC time
 - satellites
-- accuracy/HDOP where available
-- speed/course
-- PPS where available
+- accuracy / HDOP
+- speed / course
+- PPS state where available
 
-## UC100 replacement scope
+GNSS may provide position, movement triggers and system time.
 
-The project should reproduce the useful Milesight UC100 feature set except Milesight D2D:
+## Automation
 
-- Modbus channel configuration
-- periodic polling
-- datatype/endian/scaling conversion
-- transparent/raw RS485
-- threshold alarms
-- change alarms
-- IF/THEN automation
+Rules use normalized channels, events and commands:
+
+```text
+Trigger -> Conditions -> Actions
+```
+
+Supported classes include:
+
+- time schedules
+- channel changes / thresholds
+- communication errors
+- LoRaWAN commands
+- RS485 receive patterns where enabled
+- device boot/restart
+- GNSS movement/geofence events
 - delayed actions
-- local history
-- store-and-forward
-- retransmission
-- historical data retrieval
-- remote configuration
-- time / timezone / DST
-- configuration import/export through backup/restore
-- watchdog
-- firmware update / OTA concept
+- Modbus writes
+- Victron writes through explicit capabilities
+- telemetry/alarm upload
+- user variables
+- reboot
 
-The project additionally provides Modbus slave mode, Wi-Fi/WebUI, BLE, GNSS and optional Victron functionality.
+## History
 
-## Wi-Fi / Web UI
+Persist timestamped measurements, alarms, communication failures and rule events in a bounded flash-backed ring buffer with wear-aware storage.
 
-Primary device administration is through Wi-Fi and Web UI.
+History supports local viewing, remote retrieval and store-and-forward after connectivity loss.
+
+## Wi-Fi and Web UI
 
 ### Client mode
 
-- join configured WLAN
-- show connection state, IP and mDNS hostname on OLED
+Connect to a configured WLAN and expose the Web UI through IP address and mDNS hostname.
 
-### AP commissioning mode
+### AP mode
 
-- provide own WLAN
-- generate per-device random AP password
-- display SSID, AP password and configuration IP on OLED
-- optional captive portal
+Provide a commissioning WLAN and display:
 
-Use standard HTTP/HTTPS port where practical so no explicit port number is needed.
+- SSID
+- random AP password
+- configuration address
+
+Captive-portal support may redirect clients to the Web UI.
 
 ## Authentication
 
-On first boot:
-
-- generate AP password
-- generate one-time initial administrator password
-- show both on OLED
-
-First administrator login must force password change. The initial password is then invalidated permanently and no longer displayed.
-
-No universal/default or hidden master password is permitted.
+- random one-time administrator password at initial provisioning
+- initial password displayed locally on OLED
+- mandatory password change after first login
+- no universal/default/master password
+- salted password hash only
+- login rate limiting
+- session cookies
 
 ## Physical reset
 
-There is no button action for administrator-password-only reset.
-
-A deliberate long user-button action performs a **complete factory reset** and returns the device to first-setup state.
+A deliberate long user-button press performs a complete factory reset. There is no password-only physical reset.
 
 ## Backup / restore
 
-Authenticated Web UI/backend functions must support:
+The Web UI provides authenticated backup download and restore upload.
 
-- backup download
-- backup upload/restore
-- schema-versioned configuration
-- validation before apply
-- transactional/atomic restore
-- optional encryption for backups containing secrets
-
-Administrator password hashes and active sessions are not portable configuration and are not restored.
+- versioned format
+- full validation before apply
+- atomic persistence
+- administrator password and sessions excluded
+- secret-bearing backups must support encryption
 
 ## Display
 
-The OLED is a first-class local UI. Planned pages:
+OLED pages cover:
 
-- system / firmware / uptime
+- system / uptime / firmware
 - WLAN / IP / hostname
-- LoRaWAN status
-- Modbus status
-- Victron status when enabled
-- GNSS status when enabled
-- power/BAT/SOL status
-- alarms and diagnostic errors
-
-Short button presses may cycle display pages.
+- LoRaWAN state
+- Modbus state
+- Victron state
+- GNSS state
+- power / battery
+- alarms / diagnostics
 
 ## Platform I/O
 
-Expose useful board resources through a generic platform abstraction:
+Expose supported board resources through the platform layer:
 
-- BAT / battery voltage where supported
-- SOL / charging state where supported
-- switchable Vext where supported
-- user LED(s)
-- free GPIO
+- battery voltage
+- BAT / SOL state where detectable
+- Vext control
+- user LED
+- GPIO
 - ADC
 - PWM
 - touch
 - I2C
 - SPI
-- spare UARTs
+- available UARTs
 
-Exact usable pins remain subject to V4.2 pin/resource validation.
+## Power
 
-## Principal use cases
+Normal power sources:
 
-```text
-V0 / LW / MM  UC100-like Modbus master -> LoRaWAN
-V0 / LW / MS  LoRaWAN <-> Modbus slave bridge
-V1 / LW / MM  Victron + Modbus -> LoRaWAN
-V1 / LW / M0  Victron -> LoRaWAN
-V1 / L0 / M0  standalone Victron cocoon / compatibility adapter
-V0 / L0 / MM  local Modbus gateway/logger
-G1            GNSS augments any compatible configuration
-LM            future Meshtastic variants
-```
+- external 5-30 V DC field input
+- optional VE.Bus-derived supply
+- board BAT / SOL facilities as supported by the final electrical design
 
-## V1 validation blockers
-
-These are implementation validation tasks, not architecture questions:
-
-- exact free GPIO allocation on HTIT-WB32LAF V4.2
-- exact ordered GNSS module and pin capabilities
-- VE.Bus V+ voltage/current budget and off/standby behaviour
-- suitable VE.Bus RS485 timing / DE-RE behaviour
-- native USB compatibility with VictronConnect / MK3 expectations
-- Victron BLE Smart-Dongle compatibility behaviour
-- final safe power-source ORing/isolation topology
-- safe interaction of external supply, USB, BAT, SOL and VE.Bus-derived supply
+Power sources must not back-feed each other. USB connection must not defeat the intended bus isolation.

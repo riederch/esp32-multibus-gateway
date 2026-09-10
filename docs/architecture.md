@@ -1,347 +1,293 @@
 # Architecture
 
-## Product model
+## Overview
 
-The MultiBus Gateway is a modular platform built from independent functional components around a shared core.
+MultiBus Gateway uses a shared Core with independent protocol and hardware components.
 
 ```text
-                            +----------------------+
-                            |        CORE          |
-                            | config / rules / UI  |
-                            | history / events     |
-                            | security / updates   |
-                            +----------+-----------+
-                                       |
-                 +---------------------+---------------------+
-                 |                     |                     |
-          +------v------+       +------v------+       +------v------+
-          |   Victron   |       |     LoRa    |       |   Modbus    |
-          |   V=[1,0]   |       | L=[W,M,0]   |       | M=[M,S,0]   |
-          +------+------+       +------+------+       +------+------+ 
-                 |                     |                     |
-             VE.Bus               SX1262 radio          RS485 port
-                 |
-                 +-----------------------------------------------+
-                                       |
-                                +------v------+
-                                |    GNSS     |
-                                |   G=[1,0]   |
-                                +-------------+
++--------------------------------------------------------------+
+|                            Core                              |
+| config | channels | rules | history | security | Web UI     |
+| events | alarms   | time  | backup  | updates  | diagnostics|
++-----------------------------+--------------------------------+
+                              |
+                +-------------+-------------+
+                |             |             |
+             Modbus        Victron         GNSS
+             source         source          source
+                |             |             |
+              RS485         VE.Bus         UART/PPS
+                \             |             /
+                 +------------+------------+
+                              |
+                         Channel model
+                              |
+          +-------------------+-------------------+
+          |                   |                   |
+       LoRaWAN              Rules              History
 ```
 
-The components are separately configurable and may be disabled independently, subject only to physical resource conflicts.
+The Core does not depend on Modbus, VE.Bus or GNSS wire formats. Each component translates its native protocol into normalized channels, events and commands.
 
 ## Component state model
 
-### Victron
-
 ```text
-V=1  complete Victron compatibility component enabled
-V=0  Victron component disabled
-```
+V=1  Victron enabled
+V=0  Victron disabled
 
-### LoRa
+L=W  LoRaWAN
+L=M  Meshtastic
+L=0  LoRa disabled
 
-```text
-L=W  LoRaWAN backend
-L=M  Meshtastic backend [backlog / not implemented]
-L=0  LoRa radio disabled
-```
-
-`L=W` and `L=M` are mutually exclusive because they share the SX1262 radio.
-
-### Modbus
-
-```text
 M=M  Modbus RTU master
 M=S  Modbus RTU slave
 M=0  Modbus disabled
-```
 
-Transparent/raw RS485 is treated as a capability of the Modbus/RS485 component rather than a separate top-level state.
-
-### GNSS
-
-```text
 G=1  GNSS enabled
 G=0  GNSS disabled
 ```
 
-The exact external GNSS module type is not yet fixed in the specification and must be identified/validated from the ordered hardware.
+`L=W` and `L=M` are mutually exclusive because they share the SX1262 radio.
 
-## Core responsibilities
+## Data-source abstraction
 
-The Core owns all cross-component functionality:
+Modbus and Victron are deliberately unified above their transport layer.
 
-- configuration and persistence
-- capability registry
-- event bus / internal property model
-- rule engine
-- alarms
-- local history
-- store-and-forward / retransmission state
-- time, timezone and DST
-- Wi-Fi and Web UI
-- authentication and sessions
-- backup/restore
-- firmware/update infrastructure
-- display and button services
-- board I/O abstraction
-- diagnostics and watchdog
+A data source exposes:
 
-Protocol-specific logic must not leak into the Core.
+- identity
+- health/online state
+- readable properties
+- writable properties where permitted
+- events
+- commands/actions
 
-## Capability registry
-
-Each component publishes its active capabilities to the Core.
-
-Example:
+Example source IDs:
 
 ```text
-victron:
-  online
-  battery_voltage
-  charger_current
-  charger_current_set
-  ac_input
-  mk3_usb
-  victron_ble
-
-lorawan:
-  joined
-  uplink
-  downlink
-  remote_config
-
-modbus:
-  mode=master
-  read
-  write
-  raw_passthrough
-
-gnss:
-  fix
-  position
-  speed
-  course
-  utc_time
+modbus:12
+victron:vebus
+platform:power
+gnss:primary
 ```
 
-Web UI, rules and other components consume capabilities rather than depending on implementation details.
+A source may expose any number of normalized points.
 
-## Victron cocoon
-
-The Victron component is intentionally a closed block. When `V=1`, it owns the full Victron-specific feature set:
+Example points:
 
 ```text
-+------------------------------------------------------+
-| Victron component                                    |
-|                                                      |
-| VE.Bus transport / timing / frame handling           |
-| settings + telemetry                                 |
-| controlled writes                                    |
-| Standby / Panel Detect support when implemented      |
-| MK2/MK3 protocol engine                              |
-| USB MK3 compatibility layer                          |
-| VictronConnect BLE / Smart-Dongle compatibility      |
-+---------------------------+--------------------------+
-                            |
-                    defined public API
-                            |
-             properties / events / commands
+modbus:12/pressure.bar
+modbus:12/flow.m3h
+victron:vebus/battery.voltage
+victron:vebus/charger.current
+victron:vebus/ac.input.voltage
+gnss:primary/position.latitude
+platform:power/battery.voltage
 ```
 
-Other components must never parse VE.Bus frames or know Victron-specific protocol state.
+## Channel model
 
-Example public operations:
+A channel binds one normalized source point to reporting, alarm, history and remote-control behaviour.
+
+Conceptual definition:
 
 ```text
-victron.is_online
-victron.battery_voltage
-victron.ac_input_voltage
-victron.charge_current
-victron.state
-victron.set_charge_current(...)
+channel
+  id
+  enabled
+  source
+  point
+  datatype
+  scale
+  offset
+  unit
+  poll/report policy
+  alarm policy
+  history policy
+  writable
 ```
 
-The first VE.Bus target is the Victron MultiPlus 12/500/20-16.
+For Modbus sources, transport-specific fields are attached to the source binding:
 
-## LoRa component
+```text
+slave_id
+function
+address
+register_count
+endianness
+signedness
+poll_interval
+```
 
-The LoRa component owns the SX1262 radio and exposes a transport-neutral interface to the Core.
+For Victron sources, the binding references a Victron property rather than fabricating a Modbus slave address/register.
 
-### LoRaWAN (`L=W`)
+This separation means that LoRaWAN, the rule engine, history and the Web UI do not need to know whether a value originated from a Modbus register or VE.Bus.
 
-V1 target capabilities:
+## Compatibility channels
 
-- OTAA and ABP as supported by the selected stack
-- EU868
-- Class A/C support, with Class C preferred for mains-powered/stationary deployments
-- periodic uplinks
-- event/alarm uplinks
-- downlink commands
-- remote configuration
-- retransmission/store-and-forward integration
-- time synchronization where supported
-- OTA/FUOTA strategy
+The LoRaWAN FPort-85 compatibility profile uses the same logical channel representation as the Milesight UC100 V2 protocol.
 
-### Meshtastic (`L=M`)
+For Modbus-backed channels the mapping is direct.
 
-Reserved for later implementation. It is intended to replace the use cases that Milesight D2D would otherwise cover, not to emulate Milesight D2D protocol compatibility.
+For Victron-backed channels the MultiBus firmware allocates/configures a compatibility channel and feeds its normalized value into the same reporting/alarm/history encoder. The uplink format therefore remains compatible even though the underlying source is VE.Bus.
 
-## Modbus component
+Creating or changing a Victron binding is a MultiBus extension because the original compatibility protocol has no concept of a VE.Bus property. It must not redefine existing FPort-85 command identifiers.
 
-The Modbus/RS485 component supports three operational capability sets under two main states.
+## Commands
 
-### Master (`M=M`)
-
-- configurable baud/parity/stop bits
-- multiple slave devices
-- configurable channels/register definitions
-- periodic polling
-- read/write operations
-- raw/transparent passthrough when enabled
-
-### Slave (`M=S`)
-
-- configurable slave ID
-- virtual register map
-- internal properties can be mapped to holding/input registers, coils or discrete inputs where suitable
-- writable mappings may invoke controlled Core/component commands
-
-### Disabled (`M=0`)
-
-RS485 protocol processing is stopped and related resources may be powered down where practical.
-
-## GNSS component
-
-The GNSS component exposes normalized data rather than raw NMEA to the rest of the system.
-
-Target properties:
-
-- fix state
-- latitude
-- longitude
-- altitude
-- UTC time
-- satellites
-- HDOP/accuracy where available
-- speed
-- course
-- PPS where supported
-
-Possible consumers include LoRaWAN telemetry, history, time synchronization, display pages and automation/geofencing.
-
-## Rule engine integration
-
-The rule engine belongs to the Core and uses only public component properties/events/commands.
+Commands are normalized in the Core and executed only through explicit source capabilities.
 
 Examples:
 
 ```text
-IF modbus.channel.pressure > 4.5
-THEN lorawan.send_alarm(...)
+write(modbus:12/setpoint, 35)
+write(victron:vebus/charger.current, 5.0)
+invoke(system/reboot)
+invoke(lorawan/rejoin)
+```
 
-IF victron.battery_voltage < 11.5
-THEN lorawan.send_alarm(...)
+The command layer enforces:
 
-IF lorawan.command == "pump_stop"
-THEN modbus.write(...)
+- capability checks
+- type/range validation
+- writable allowlists
+- source-specific safety rules
 
-IF time == 12:00
-THEN victron.set_charge_current(...)
+## Victron component
+
+The Victron component owns all Victron-specific interoperability:
+
+```text
+Victron component
+|- VE.Bus transport/timing/frame handling
+|- telemetry and settings
+|- controlled writes
+|- Standby / Panel Detect support where implemented
+|- MK2/MK3 protocol engine
+|- USB MK3 compatibility layer
+`- VictronConnect BLE compatibility layer
+```
+
+Its public interface is the generic source/channel API plus explicitly exposed Victron capabilities.
+
+No other component parses VE.Bus frames.
+
+## Modbus component
+
+### Master mode
+
+- RS485 Modbus RTU master
+- configurable serial parameters
+- multiple slave devices
+- register/channel polling
+- coils, discrete inputs, input registers and holding registers
+- supported write operations
+- type/endian/scaling conversion
+- raw/transparent RS485 access
+
+### Slave mode
+
+- configurable slave ID
+- virtual register/coils map
+- normalized Core points may be exposed as Modbus objects
+- writable mappings invoke only explicitly allowed Core/source commands
+
+## GNSS component
+
+GNSS exposes normalized properties including:
+
+- fix state
+- latitude / longitude
+- altitude
+- UTC time
+- satellites
+- accuracy/HDOP
+- speed / course
+- PPS state where available
+
+Raw NMEA is kept inside the GNSS component.
+
+## LoRa component
+
+### LoRaWAN
+
+LoRaWAN provides two protocol surfaces:
+
+1. **FPort 85 compatibility profile** for the UC100 V2-compatible command and payload set.
+2. **MultiBus extension FPort** for features that cannot be represented by the compatibility protocol.
+
+The compatibility profile remains stable and extensions never reuse or reinterpret an existing compatibility command.
+
+### Meshtastic
+
+Meshtastic is an alternative transport backend for the same Core event/channel/command model. It is mutually exclusive with LoRaWAN on the onboard SX1262.
+
+## Core services
+
+The Core owns:
+
+- persistent configuration
+- data-source registry
+- channel registry
+- capability registry
+- event bus
+- rule engine
+- alarms
+- local history
+- store-and-forward/retransmission state
+- time/timezone/DST
+- Wi-Fi and Web UI
+- authentication and sessions
+- backup/restore
+- board UI and I/O abstraction
+- watchdog
+- firmware update/OTA infrastructure
+
+## Rule engine
+
+Rules operate only on normalized points/events/commands.
+
+Examples:
+
+```text
+IF channel.pressure > 4.5
+THEN alarm("high_pressure")
+
+IF victron:vebus/battery.voltage < 11.5
+THEN lorawan.report("battery_low")
+
+IF remote.command == "pump_stop"
+THEN write(modbus:12/pump.run, false)
 ```
 
 ## Platform services
 
-Board resources are exposed through a hardware/platform abstraction layer:
-
 ```text
 Platform
 |- Power
-|  |- external input
-|  |- optional VE.Bus-derived input
-|  |- BAT
-|  |- SOL
-|  |- battery measurement
+|  |- external supply state
+|  |- BAT / battery voltage
+|  |- SOL / charge state where available
 |  `- Vext control
 |- UI
 |  |- OLED
 |  |- user button
-|  `- LEDs
+|  `- LED
 |- Connectivity
 |  |- Wi-Fi
-|  |- Bluetooth LE
+|  |- BLE
 |  `- native USB
-|- Expansion I/O
-|  |- GPIO
-|  |- ADC
-|  |- PWM
-|  |- touch
-|  |- I2C
-|  |- SPI
-|  `- spare UART where available
+|- Expansion
+|  |- GPIO / ADC / PWM / touch
+|  |- I2C / SPI
+|  `- available UARTs
 `- System
-   |- persistent storage
+   |- storage
    |- watchdog
    |- time
-   `- update infrastructure
+   `- update services
 ```
 
-These platform services are not themselves Victron, LoRaWAN, Modbus or GNSS components.
+## Electrical separation
 
-## Wi-Fi and Web administration
-
-Wi-Fi/WebUI is the primary platform administration interface.
-
-- client mode: connect to configured WLAN and show IP/mDNS name on OLED
-- AP commissioning mode: display SSID, AP password and configuration IP
-- optional captive portal
-- standard HTTP/HTTPS port preferred to avoid displaying an extra port
-- BLE is not required for normal platform administration
-
-When `V=1`, BLE and USB may additionally expose Victron-specific compatibility functions inside the Victron cocoon.
-
-## USB architecture
-
-Native ESP32-S3 USB is a platform service. Generic functions include firmware/service/diagnostics.
-
-When `V=1`, the Victron component may additionally expose an MK2/MK3-compatible USB transport. The MK2/MK3 protocol engine must remain independent of the concrete USB backend.
-
-Preferred path:
-
-1. test native ESP32-S3 USB device emulation
-2. emulate required FTDI-like control behaviour only where technically/legal appropriate
-3. if host compatibility requires it, use a genuine FTDI device on a later PCB as a fallback
-
-## Power-source independence
-
-Victron is optional, therefore the platform cannot depend on VE.Bus for power.
-
-Supported source concepts:
-
-- external `V+ / V-` on the field terminal, nominal target 5-30 V DC
-- VE.Bus V+ / GND when a Victron device is connected and the available supply has been validated
-
-Both sources must be protected and ORed/isolated so they cannot back-feed each other.
-
-## Principal use cases
-
-```text
-V0 / LW / MM  UC100-like Modbus -> LoRaWAN gateway
-V0 / LW / MS  LoRaWAN <-> Modbus slave bridge
-V1 / LW / MM  Victron + Modbus -> LoRaWAN
-V1 / LW / M0  Victron -> LoRaWAN
-V1 / L0 / M0  standalone Victron compatibility adapter
-V0 / L0 / MM  local Modbus gateway/logger
-G1            adds GNSS capabilities to any compatible mode
-LM            later Meshtastic variants of the above
-```
-
-## Safety boundaries
-
-- VE.Bus and Modbus use independent RS485 interfaces.
-- Maintain galvanic isolation so USB/PC, VE.Bus and external field wiring do not create unintended ground paths.
-- Do not assume automatic-direction RS485 is suitable for production VE.Bus timing until measured.
-- Use explicit DE/RE control for final VE.Bus hardware.
-- Treat direct VE.Bus control, MK3 emulation and Victron BLE emulation as experimental until validated.
+VE.Bus and Modbus use separate RS485 transceiver paths. The design must prevent USB, VE.Bus and field wiring from creating unintended ground paths. External supply and VE.Bus-derived supply must not back-feed each other.

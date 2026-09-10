@@ -1,159 +1,123 @@
 # Validation tasks
 
-These items are intentionally left as implementation validation tasks. They do not block the V1 architecture/specification.
-
-## HTIT-WB32LAF V4.2 resource mapping
-
-Validate the exact board revision and create a final GPIO/resource map for:
-
-- SX1262
-- OLED
-- native USB D+/D-
-- user button
-- LEDs
-- battery measurement control
-- Vext control
-- GNSS UART/PPS/power-control signals
-- VE.Bus UART RX/TX/DE/RE
-- Modbus UART RX/TX/DE/RE
-- remaining free GPIO/ADC/I2C/SPI/UART resources
-
-No production pin assignment is considered final until this is complete.
-
-## Ordered GNSS module
-
-Identify the exact external GNSS module supplied/ordered with the board and validate:
-
-- supply voltage
-- UART voltage levels
-- baud rate/default protocol
-- supported constellations
-- PPS availability
-- wake/reset/power-control behaviour
-- current consumption
-- connector pinout
+Open technical items that require measurement, interoperability testing or final hardware selection.
 
 ## VE.Bus electrical interface
 
 For the Victron MultiPlus 12/500/20-16 validate:
 
-- RJ45 pinout on actual hardware before connection
-- V+ voltage on pin 2 relative to pin 3
-- available current/power from VE.Bus V+
+- RJ45 pinout on the actual device
+- V+ voltage and available current
 - behaviour in on/off/standby/low-power states
 - A/B polarity
 - signal levels
-- required bias/termination behaviour
+- bias/termination behaviour
 - receive/transmit turnaround timing
-- suitability of prototype automatic-direction RS485 modules
-- explicit DE/RE timing for final hardware
+- explicit DE/RE timing
 
-Start with passive receive/sniffing before enabling transmission.
+Begin with passive receive/sniffing before enabling transmission.
 
 ## Power architecture
 
-Validate a final topology supporting both:
+Validate a final topology for:
 
-- external 5-30 V field-terminal input
+- external 5-30 V input
 - optional VE.Bus-derived supply
+- USB-C
+- BAT / SOL board paths
 
 Requirements:
 
-- no source back-feed
+- no back-feed between sources
 - reverse-polarity protection
-- input transient protection
-- safe power ORing/source selection
-- galvanic isolation strategy compatible with USB connection
+- transient protection
+- safe source selection / ORing
+- galvanic isolation compatible with USB
 - acceptable efficiency and quiescent current
-- safe interaction with HTIT-WB32LAF BAT/SOL/USB power paths
 
 ## Modbus RS485 hardware
 
 Validate:
 
-- selected isolated transceiver module/device
-- 3.3 V ESP32 logic compatibility
-- 5-30 V field-system isolation behaviour
+- isolated transceiver selection
+- 3.3 V logic compatibility
 - DE/RE timing
-- selectable 120 ohm termination
-- fail-safe biasing strategy
-- A/B naming/polarity
-- maximum supported baud rate
+- selectable 120-ohm termination
+- fail-safe biasing
+- A/B polarity
+- maximum baud rate
+- final free GPIO allocation
+
+## GNSS module
+
+Validate the exact external module:
+
+- supply requirements
+- default baud/protocol
+- supported constellations
+- PPS behaviour
+- wake/reset/power-control behaviour
+- current consumption
 
 ## Native USB / MK3 compatibility
 
-Research and validate whether Victron software accepts a native ESP32-S3 USB implementation.
-
 Validate:
 
-- original MK3 USB descriptors/interfaces
+- MK3 USB descriptors/interfaces
 - host-driver expectations
-- whether a normal CDC interface is sufficient
-- required FTDI-like vendor control requests
-- MK2/MK3 byte-stream protocol transport
-- behaviour with VictronConnect on supported desktop/mobile hosts
+- FTDI-specific control behaviour if required
+- MK2/MK3 byte-stream transport
+- VictronConnect interoperability
 
-Do not use another vendor's VID/PID in a distributable product without authorization.
-
-Fallback: genuine FTDI USB-UART hardware on a future PCB while keeping the ESP32-side MK2/MK3 protocol engine unchanged.
+A genuine FTDI USB-UART implementation remains an acceptable hardware fallback if required for host compatibility.
 
 ## Victron BLE compatibility
 
-Reverse-engineering/interop research task:
+Validate:
 
-- identify Smart Dongle advertising/service behaviour
-- determine pairing/security requirements
-- determine which values/commands VictronConnect expects
-- establish realistic compatibility scope
-
-This is part of the Victron cocoon but is not required to validate basic VE.Bus communication.
+- advertising/services
+- pairing/security behaviour
+- values and commands expected by VictronConnect
+- achievable Smart-Dongle compatibility scope
 
 ## LoRaWAN stack
 
-Validate selected ESP32-S3/SX1262 LoRaWAN stack for:
+Validate:
 
 - EU868
 - OTAA
 - ABP if required
-- Class A
-- Class C
-- downlink handling
+- Class A / C
 - confirmed/unconfirmed uplinks
 - ADR
 - persistent frame counters
 - join/rejoin behaviour
 - ChirpStack interoperability
-- payload size/fragmentation strategy
+- payload size/fragmentation
 - FUOTA feasibility
+- FPort-85 compatibility vectors against the complete UC100 V2 command set
 
-## Storage endurance
+## Storage
 
-Define and test:
+Validate:
 
-- NVS/config storage strategy
 - history ring-buffer layout
 - wear levelling
-- atomic configuration updates
+- atomic updates
 - power-loss behaviour during writes/restores
-- expected flash endurance under worst-case polling/history rates
+- flash endurance at worst-case write rates
 
-## Web security implementation
+## Web security
 
-Validate practical embedded implementation for:
+Validate/harden:
 
-- password hashing/work factor
-- session storage
+- password KDF/work factor
+- session lifecycle
 - CSRF protection
-- login rate limiting/lockout
-- backup encryption format
-- HTTPS feasibility/certificate strategy if enabled
+- login throttling
+- backup encryption
+- HTTPS/certificate strategy
 
-## Acceptance criterion
+## Completion rule
 
-Each validation item should eventually resolve to one of:
-
-- confirmed and documented
-- changed design decision
-- explicitly unsupported limitation
-
-Resolved items should be moved into the relevant permanent specification/hardware document rather than remaining only in this file.
+A resolved item moves into the relevant permanent specification or hardware document and is removed from this list.

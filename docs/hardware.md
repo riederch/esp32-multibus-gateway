@@ -1,235 +1,198 @@
 # Hardware
 
-## Reference prototype
+## Reference platform
 
-Reference development board:
+Reference board:
 
-- **Heltec HTIT-WB32LAF V4.2 / WiFi LoRa 32 V4.2**
+- Heltec HTIT-WB32LAF V4.2 / WiFi LoRa 32 V4.2
 - ESP32-S3
 - SX1262 LoRa transceiver for EU868
-- onboard OLED display
-- onboard user button and LEDs
+- onboard OLED
+- onboard user button and LED
 - native USB-C
 - Wi-Fi and Bluetooth LE
-- BAT connector / battery measurement support
-- SOL connector / solar charging path where supported by the board
-- Vext / board-controlled peripheral supply where supported
-- external GNSS connector; the exact ordered GNSS module type is still to be confirmed
+- BAT connector and battery measurement support
+- SOL connector / solar charging path
+- switchable Vext
+- external GNSS connector
 
-The first prototype should preserve use of the module as much as possible and add only the external field-interface circuitry required for VE.Bus and Modbus.
+External circuitry adds two independent isolated RS485 paths: one for Modbus and one for optional Victron VE.Bus.
 
-## External connectors
-
-### 4-pole field terminal
-
-Target pinout:
+## Field terminal
 
 ```text
-V+   external supply input
+V+   external supply input, target 5-30 V DC
 V-   supply return
-A    RS485 / Modbus A
-B    RS485 / Modbus B
+A    Modbus RS485 A
+B    Modbus RS485 B
 ```
 
-External supply target range: **5-30 V DC**.
-
-This is intentionally similar to the practical UC100 wiring concept.
-
-### Victron-compatible RJ45
-
-The RJ45 connector is optional and belongs to the Victron component.
-
-VE.Bus pinout:
+## Victron RJ45
 
 | RJ45 pin | Signal | Use |
 |---:|---|---|
-| 1 | NC | leave open |
+| 1 | NC | open |
 | 2 | V+ | optional gateway power source |
 | 3 | GND | VE.Bus reference / power return |
 | 4 | A | VE.Bus differential data A |
 | 5 | B | VE.Bus differential data B |
 | 6 | STB / Standby | optional Victron control |
 | 7 | PD / Panel Detect | optional Victron control |
-| 8 | NC | leave open |
+| 8 | NC | open |
 
-Do not confuse VE.Bus with VE.Can; the same connector family is used with different pin assignments and protocols.
+VE.Bus and VE.Can use similar connectors but different pin assignments and protocols.
 
 ## Power architecture
 
-The platform supports two normal power sources:
+Supported source concepts:
 
-1. external supply on the field terminal (`V+ / V-`), target 5-30 V DC
-2. VE.Bus V+ / GND when a Victron device is connected
+1. external 5-30 V supply on `V+ / V-`
+2. optional VE.Bus V+ / GND supply
+3. board BAT / SOL facilities within the limits of the final power topology
+4. USB-C during service/programming
 
-Neither source is mandatory by itself.
-
-The two sources must **not** be directly paralleled. The final design requires protected source selection / power ORing so one input cannot back-feed the other.
-
-Concept:
+Independent sources must not be directly paralleled or allowed to back-feed one another.
 
 ```text
-External V+ 5-30 V --- protection ---+
-                                     +--- power OR / isolation --- regulated board supply
-VE.Bus V+ ----------- protection ----+
+External V+ ---- protection ----+
+                                +---- protected source selection ---- system supply
+VE.Bus V+ ------ protection ----+
+
+BAT / SOL / USB ---- board power paths subject to board schematic constraints
 ```
 
-The exact converter topology must be selected after measuring the actual VE.Bus voltage/current capability and confirming the acceptable power input path for the HTIT-WB32LAF V4.2.
-
-### VE.Bus supply validation
-
-For the initial Victron target, MultiPlus 12/500/20-16, validate:
-
-- open-circuit V+ voltage
-- voltage under approximately 100 mA input load
-- voltage under approximately 250 mA input load
-- optionally 500 mA if electrically reasonable
-- available continuous power
-- behaviour during inverter/charger off, standby and low-power states
-
-VE.Bus V+ must be treated as a device-derived supply, not as an assumed regulated 12.0 V auxiliary rail.
+The final design must preserve safe isolation when USB is connected while field buses are attached.
 
 ## Electrical isolation
 
-VE.Bus and Modbus are separate electrical domains and require independent transceiver paths.
-
-Target production concept:
+VE.Bus and Modbus are separate electrical domains.
 
 ```text
 VE.Bus A/B <-> isolated RS485 <-> ESP32-S3
 Modbus A/B <-> isolated RS485 <-> ESP32-S3
 ```
 
-Power-domain design must also ensure that connecting USB to a PC cannot accidentally bypass the intended VE.Bus isolation.
+The two buses never share one switched transceiver.
 
-Depending on the final power topology this may require an isolated DC/DC domain or equivalent isolation strategy on the VE.Bus side.
-
-## VE.Bus RS485 channel
+## VE.Bus interface
 
 Requirements:
 
 - 256000 baud capability
 - isolated differential interface
-- explicit DE/RE control preferred for final hardware
-- verified VE.Bus turnaround timing
-- termination/biasing matched to the actual topology
+- explicit DE/RE control for production hardware unless measured timing proves an alternative safe
+- validated A/B polarity
+- validated bias/termination behaviour
+- validated turnaround timing
 
-Automatic-direction RS485 modules may be used only for early experiments if timing proves adequate; they are not assumed production-suitable.
+Initial compatibility target: Victron MultiPlus 12/500/20-16.
 
-## Modbus RS485 channel
+## Modbus interface
 
 Requirements:
 
-- independent isolated RS485 interface
+- independent isolated RS485 path
 - configurable baud rate
 - configurable parity
 - configurable stop bits
-- Modbus RTU master or slave depending on configuration
-- raw/transparent access capability
-- optional selectable 120 ohm termination
+- Modbus RTU master or slave
+- raw/transparent access
+- selectable 120-ohm termination where practical
+- defined fail-safe/biasing strategy
 
-## Native board resources
+## Verified onboard pin map
 
-The firmware should expose usable onboard resources through the Platform abstraction instead of binding them to one application.
+HTIT-WB32LAF V4.2 onboard resources used by the firmware abstraction:
 
-### OLED display
+```text
+GPIO0   USER / PRG button
+GPIO1   battery ADC input
+GPIO35  user LED
+GPIO36  Vext control
+GPIO37  battery ADC control
 
-Uses:
+GPIO17  OLED SDA
+GPIO18  OLED SCL
+GPIO21  OLED reset
 
-- system status
-- Wi-Fi/AP credentials during commissioning
-- IP / mDNS hostname
-- component status
-- alarms and diagnostics
-- Victron values when enabled
-- Modbus state
+GPIO34  GNSS power control
+GPIO38  GNSS RX
+GPIO39  GNSS TX
+GPIO40  GNSS wake
+GPIO41  GNSS PPS
+GPIO42  GNSS reset
+
+GPIO8..14  SX1262-related signals according to the board pin map
+```
+
+VE.Bus and Modbus UART/DE/RE pins are assigned only from pins remaining free after all onboard functions are accounted for.
+
+## OLED
+
+The OLED is the local status and commissioning interface.
+
+Display content includes:
+
+- device name
+- Wi-Fi state / IP / hostname
+- AP SSID and password during commissioning
+- one-time administrator password during initial setup
 - LoRaWAN state
+- Modbus state
+- Victron state
 - GNSS state
-- power/battery state
+- battery/power state
+- alarms and diagnostics
+- factory-reset countdown
 
-### User button
+## User button
 
-Expected uses:
+- short press: display navigation/context action
+- deliberate long press: complete factory reset
+- no password-only reset path
 
-- short press: cycle display pages / context action
-- deliberate long press: complete factory reset with visible warning/countdown
-- commissioning/AP entry may be assigned as a separate safe interaction during implementation
+## BAT / SOL / Vext
 
-There is no physical button function that resets only the administrator password.
+Platform power services expose, where electrically detectable:
 
-### BAT and SOL
-
-Board battery/solar facilities should be represented by the Platform Power service where electrically supported by the exact board revision.
-
-Desired exposed properties/capabilities include:
-
-- battery present
 - battery voltage
-- charging state where detectable
-- external/solar source state where detectable
+- battery-present state
+- charging state
+- solar/external charging state
+- Vext enable/disable
 
-Exact behaviour and safe simultaneous use of USB, external V+, BAT, SOL and VE.Bus-derived power must be validated against the V4.2 schematic before final wiring.
-
-### Vext and expansion I/O
-
-Where supported by the board, expose switchable Vext and unused expansion resources through a generic I/O abstraction:
-
-- digital GPIO
-- ADC
-- PWM
-- touch
-- I2C
-- SPI
-- spare UART resources
-
-Exact free GPIOs are not yet fixed. Pin assignment must be done only after checking conflicts with SX1262, OLED, GNSS, native USB, user controls and power-management signals.
+Safe simultaneous use of USB, external V+, BAT, SOL and VE.Bus-derived power is a hardware validation requirement.
 
 ## GNSS
 
-An external GNSS module has been ordered for the HTIT-WB32LAF V4.2 platform.
+The GNSS interface provides:
 
-The GNSS component should support, where provided by the actual module/interface:
-
-- UART receive/transmit
-- latitude/longitude
-- altitude
-- UTC time
-- satellite/fix quality
-- speed/course
+- UART RX/TX
+- power control
+- wake
+- reset
 - PPS
-- power control / wake / reset where available
 
-The exact module type and pin-level capabilities remain a validation item until the ordered hardware is identified.
+The GNSS component normalizes position/time/movement information for the Core.
 
 ## USB-C
 
-Native ESP32-S3 USB is retained for:
+Native ESP32-S3 USB is used for:
 
-- initial flashing
+- flashing
+- service / diagnostics
 - recovery
-- diagnostics/service
-- firmware updates where suitable
-- Victron MK2/MK3 USB compatibility experiments when `V=1`
-
-USB D+/D- pins must remain reserved for native USB operation.
+- firmware update
+- optional MK2/MK3 compatibility transport when Victron is enabled
 
 ## Bluetooth LE
 
-BLE is available as a platform radio. Generic platform administration should primarily use Wi-Fi/WebUI. When Victron is enabled, BLE may be claimed by the Victron cocoon for VictronConnect/Smart-Dongle compatibility experiments.
+BLE is a platform radio. Generic administration uses Wi-Fi/WebUI. Victron may additionally use BLE for VictronConnect compatibility.
 
 ## LoRa
 
-The onboard SX1262 is owned by the LoRa component.
-
-Supported architecture modes:
+The onboard SX1262 is owned by exactly one LoRa backend at a time:
 
 - LoRaWAN (`L=W`)
-- Meshtastic (`L=M`, backlog)
+- Meshtastic (`L=M`)
 - disabled (`L=0`)
-
-Only one radio stack may own the SX1262 at a time.
-
-## Initial Victron target
-
-- Victron MultiPlus 12/500/20-16
-
-Direct VE.Bus control and compatibility emulation remain experimental until validated on controlled hardware.

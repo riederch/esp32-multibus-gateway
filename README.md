@@ -1,172 +1,122 @@
 # ESP32 MultiBus Gateway
 
-A modular ESP32-S3 based multi-purpose fieldbus and LoRa platform.
+MultiBus Gateway is a modular ESP32-S3 field gateway for LoRaWAN, RS485/Modbus, Victron VE.Bus, GNSS and local automation.
 
-The project is no longer defined around Victron as a mandatory interface. Instead, it consists of independently configurable components with a shared core for configuration, automation, history, UI and maintenance.
+## Reference hardware
 
-Reference prototype hardware:
-
-- **Heltec HTIT-WB32LAF V4.2** / WiFi LoRa 32 V4.2
+- Heltec HTIT-WB32LAF V4.2 / WiFi LoRa 32 V4.2
 - ESP32-S3
-- SX1262 for EU868 LoRa
-- optional external GNSS module
+- SX1262, EU868
 - OLED display
-- native USB-C
 - Wi-Fi and Bluetooth LE
-- external isolated RS485 interfaces for Modbus and optional Victron VE.Bus
+- native USB-C
+- BAT and SOL connections
+- external GNSS interface
+- isolated RS485 interface for Modbus
+- isolated RS485 interface for VE.Bus
 
 ## Component modes
 
 ```text
-V = [1,0]
-    1 = complete Victron component enabled
-    0 = Victron disabled
-
-L = [W,M,0]
-    W = LoRaWAN
-    M = Meshtastic [backlog / not implemented]
-    0 = LoRa radio disabled
-
-M = [M,S,0]
-    M = Modbus RTU master
-    S = Modbus RTU slave
-    0 = Modbus disabled
-
-G = [1,0]
-    1 = GNSS enabled
-    0 = GNSS disabled
+V = [1,0]       Victron enabled / disabled
+L = [W,M,0]     LoRaWAN / Meshtastic / disabled
+M = [M,S,0]     Modbus RTU master / slave / disabled
+G = [1,0]       GNSS enabled / disabled
 ```
 
-The modes are independent except where a physical hardware resource is shared. LoRaWAN and Meshtastic are mutually exclusive because they use the same SX1262 radio.
+LoRaWAN and Meshtastic are mutually exclusive because they use the same SX1262 radio.
 
-## Primary use cases
+## Core model
 
-- UC100-like Modbus RTU master -> LoRaWAN gateway
-- LoRaWAN -> Modbus RTU slave bridge
-- Victron + Modbus telemetry -> LoRaWAN
-- Victron -> LoRaWAN
-- standalone Victron compatibility adapter
-- local Modbus gateway/logger
-- GNSS-enabled mobile or stationary telemetry node
-- later: Meshtastic-backed variants of the same application model
+The firmware is built around a shared Core and independent components:
 
-## Victron component
+```text
+                    +-----------------------+
+                    |         Core          |
+                    | config / channels     |
+                    | rules / history       |
+                    | security / Web UI     |
+                    +-----------+-----------+
+                                |
+             +------------------+------------------+
+             |                  |                  |
+         DataSource         DataSource         DataSource
+          Modbus             Victron             GNSS
+             |                  |                  |
+           RS485              VE.Bus              UART
+                                |
+                         +------+------+
+                         | LoRa transport |
+                         | LoRaWAN / Mesh |
+                         +---------------+
+```
 
-Victron is implemented as a closed compatibility block. When `V=1`, the component owns the complete Victron-specific functionality:
+Modbus, Victron, GNSS and platform I/O expose values through a common data-source/channel abstraction. LoRaWAN, history, alarms, rules and the Web UI consume channels rather than bus-specific internals.
 
-- direct VE.Bus communication
-- settings and telemetry
-- optional Standby / Panel Detect support
-- VictronConnect-compatible BLE experiments
-- MK2/MK3 protocol engine
-- native USB MK3-USB compatibility experiments
+## LoRaWAN protocol
 
-Other components never access VE.Bus internals directly. They interact only through the Victron component's defined properties, events and commands.
+The LoRaWAN interface provides a compatibility profile on **FPort 85** that follows the Milesight UC100 V2 wire protocol. Existing compatible payload decoders and downlink generators can therefore be reused for the standard command set.
 
-## UC100 replacement target
+MultiBus-specific functions use a separate configurable extension FPort and never redefine FPort-85 commands. A Victron value can be bound to a normal compatibility channel and is then reported through the same channel/alarm/history framing as a Modbus-derived value.
 
-The platform should reproduce the useful UC100 feature set without Milesight D2D:
+Milesight D2D radio operation is not part of the platform. D2D-related protocol identifiers remain reserved so they cannot collide with MultiBus extensions. Meshtastic is the optional mesh backend under `L=M`.
 
-- configurable Modbus channels
-- polling and register conversion
-- data types, byte/word order, scale and offset
-- transparent/raw RS485 access
-- threshold and change alarms
-- generic IF/THEN rule engine
-- delayed actions
-- local history
-- store-and-forward / retransmission
-- historical data retrieval
-- remote configuration
-- time / timezone / DST support
-- backup and restore
-- watchdog
-- firmware update / OTA concept
+See `docs/lorawan-protocol.md`.
 
-In addition, this project adds Modbus slave operation, Wi-Fi Web UI, Bluetooth LE, optional GNSS and the optional Victron compatibility component.
+## Field interfaces
 
-## Physical connectors
+### 4-pole terminal
 
-Target product interface:
+```text
+V+   5-30 V DC supply
+V-   supply return
+A    Modbus RS485 A
+B    Modbus RS485 B
+```
 
-- **4-pole terminal block:** `V+ / V- / A / B`
-  - external supply: nominal target **5-30 V DC**
-  - RS485 / Modbus A/B
-- **RJ45:** Victron-compatible VE.Bus, optional
-  - VE.Bus data
-  - optional power source from VE.Bus V+/GND
-- **USB-C:** firmware/service and, when Victron is enabled, experimental MK3-USB compatibility
-- **Wi-Fi/BLE/LoRa/GNSS:** wireless or board-integrated interfaces
+### Victron RJ45
 
-External supply and VE.Bus-derived supply must be isolated/ORed so they cannot back-feed each other.
+The optional RJ45 carries VE.Bus communication and may also provide a power source through VE.Bus V+/GND. VE.Bus and Modbus use independent isolated transceiver paths.
 
-## Configuration
+External power and VE.Bus-derived power must be protected against back-feed.
 
-The primary administration interface is a local Web UI over Wi-Fi.
+## Administration
 
-- client mode: device joins an existing WLAN and displays IP/hostname
-- AP commissioning mode: display shows SSID, AP password and configuration address
-- initial administrator password is generated once and shown on the OLED
-- first login forces an administrator password change
-- long deliberate user-button action performs a complete factory reset
-- configuration backup can be downloaded and later uploaded/restored through the Web UI
+Wi-Fi and the local Web UI are the primary administration interface.
 
-## Platform services
+- WLAN client mode exposes the Web UI through the assigned IP address and mDNS hostname.
+- AP commissioning mode displays SSID, AP password and configuration address on the OLED.
+- A one-time administrator password is displayed during initial provisioning.
+- The first administrator login requires a password change.
+- A deliberate long button press performs a complete factory reset.
+- Configuration backup and restore are available through the Web UI/backend.
 
-Board resources are exposed as shared platform services rather than being tied to one protocol component:
+USB-C remains available for flashing, service and recovery. When Victron is enabled, USB and BLE may additionally expose Victron compatibility functions.
 
-- OLED display
-- user button
-- status/user LEDs
-- BAT connection and battery-voltage monitoring
-- SOL connection / solar charging path where supported by the board
+## Board services
+
+The Core exposes board resources independently of protocol components:
+
+- OLED
+- user button and LED
+- battery voltage measurement
+- BAT / SOL power facilities
 - switchable Vext
-- free GPIO / ADC / PWM / touch
-- I2C / SPI / UART expansion
-- Wi-Fi
-- Bluetooth LE
-- native USB
+- GPIO / ADC / PWM / touch
+- I2C / SPI / available UART resources
+- Wi-Fi / BLE / USB
 - persistent storage
 - watchdog
-- OTA/update infrastructure
+- OTA/update services
 
 ## Documentation
 
-- `docs/specification.md` - consolidated product requirements
-- `docs/architecture.md` - component and API architecture
-- `docs/hardware.md` - reference hardware, connectors and electrical domains
-- `docs/uc100-compatibility.md` - UC100 replacement feature scope
-- `docs/rule-engine.md` - cross-component automation model
-- `docs/web-ui.md` - WLAN, Web UI and local UI behaviour
-- `docs/security-and-provisioning.md` - first setup, credentials, factory reset and backup/restore
-- `docs/validation.md` - technical items that still require measurement or reverse engineering
-- `docs/backlog.md` - later ideas such as Meshtastic
-
-## Implementation status
-
-Implemented foundation:
-
-- runtime `V/L/M/G` configuration model
-- component lifecycle and capability registry
-- NVS-backed persistent device/network configuration
-- generated AP and initial administrator credentials
-- salted iterated administrator password hashing
-- Wi-Fi client mode with AP fallback and captive-DNS support
-- authenticated local Web UI
-- forced administrator-password change after first login
-- in-memory authenticated session and login throttling
-- component/network configuration through the Web UI
-- versioned JSON backup download and validated restore upload
-- PlatformIO build CI
-
-Still intentionally inactive until hardware mapping/protocol validation:
-
-- VE.Bus electrical transport and protocol traffic
-- Modbus RS485 transport
-- SX1262 LoRaWAN implementation
-- GNSS UART implementation
-- OLED/button board service
-- BAT/SOL/Vext monitoring/control
-- Victron BLE and MK3 compatibility experiments
-
-The current firmware uses a generic ESP32-S3 PlatformIO target for compile validation. Exact HTIT-WB32LAF V4.2 GPIO allocation and board-specific services remain validation tasks before field-bus hardware is enabled.
+- `docs/specification.md` - product requirements
+- `docs/architecture.md` - component, channel and data-source architecture
+- `docs/lorawan-protocol.md` - LoRaWAN compatibility profile and extensions
+- `docs/hardware.md` - hardware and electrical interfaces
+- `docs/rule-engine.md` - automation model
+- `docs/web-ui.md` - Wi-Fi, Web UI and OLED interaction
+- `docs/security-and-provisioning.md` - authentication, reset and backup/restore
+- `docs/validation.md` - unresolved technical validation items
+- `docs/backlog.md` - deferred optional features

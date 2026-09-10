@@ -2,37 +2,25 @@
 
 ## Principle
 
-Automation is a Core feature. It must not belong to Modbus, LoRaWAN, Victron or GNSS individually.
-
-Rules consume normalized properties/events and invoke defined component commands through public APIs.
-
-## Model
+Automation is a Core service. Rules consume normalized channels/events and invoke validated commands through public component APIs.
 
 ```text
-Trigger
-  -> Conditions
-  -> Actions
+Trigger -> Conditions -> Actions
 ```
-
-A rule may contain one or more conditions and one or more actions. Actions may optionally be delayed.
 
 ## Trigger sources
 
-V1 target trigger classes:
-
 - time/schedule
 - device boot/restart
-- Modbus channel value/change/error
+- channel value/change/error
 - LoRaWAN downlink / remote command
 - raw RS485 receive pattern when enabled
-- Victron property/event when `V=1`
-- GNSS property/event when `G=1`
+- Victron events/properties
+- GNSS movement/fix/geofence events
 - Core/system events
-- later Meshtastic event/message when `L=M`
+- Meshtastic messages when the Meshtastic backend is enabled
 
 ## Conditions
-
-Target operators:
 
 - equals / not equals
 - greater / greater-or-equal
@@ -41,65 +29,70 @@ Target operators:
 - changed by absolute delta
 - true / false
 - online / offline
-- string/message match where appropriate
-- duration/hold time
-- debounce/lockout
+- string/message match
+- duration / hold time
+- debounce / lockout
 
 ## Actions
 
-Target action classes:
-
 - LoRaWAN telemetry/event/alarm uplink
-- immediate data upload
+- immediate channel report
+- write normalized writable point
 - Modbus write
 - raw RS485 transmit
+- Victron setting write through a whitelisted source point
 - set internal/user variable
 - create/clear alarm
-- write a whitelisted Victron setting when `V=1`
-- request component operation through its public API
-- reboot device
-- delay action execution
-- later send Meshtastic message
+- reboot
+- delayed execution
+- Meshtastic transmit when available
 
 ## Examples
 
 ```text
-IF modbus.pressure > 4.5
-THEN lorawan.send_alarm("high_pressure")
+IF channel.pressure > 4.5
+THEN alarm("high_pressure")
 ```
 
 ```text
-IF victron.battery_voltage < 11.5
-THEN lorawan.send_alarm("battery_low")
+IF victron:vebus/battery.voltage < 11.5
+THEN lorawan.report("battery_low")
 ```
 
 ```text
-IF lorawan.command == "pump_stop"
-THEN modbus.write(pump.stop)
+IF remote.command == "pump_stop"
+THEN write(modbus:12/pump.run, false)
 ```
 
 ```text
 IF time == 12:00
-THEN victron.set_charge_current(5A)
+THEN write(victron:vebus/charger.current, 5.0)
 ```
 
 ```text
-IF gnss.distance_from(home) > 500m
-THEN lorawan.send_alarm("geofence")
+IF gnss:primary/distance.home > 500
+THEN alarm("geofence")
 ```
 
-## Local operation
+## Local execution
 
-Rules must execute locally even when LoRaWAN/Wi-Fi is unavailable. Remote connectivity is only required for actions that explicitly need it.
+Rules execute locally without Wi-Fi or LoRaWAN connectivity. Only actions that explicitly use a remote transport depend on connectivity.
 
 ## Safety
 
-Writable actions must be capability-checked and whitelisted. Generic remote payloads must never become unrestricted memory/register/command execution paths.
+Writable actions require:
+
+- source capability checks
+- writable-point allowlists
+- datatype/range validation
+- component-specific safety validation
+
+Remote payloads must never become unrestricted memory, register or command execution paths.
 
 ## Persistence
 
-Rules are persistent configuration and therefore included in backup/restore and remote configuration mechanisms.
+Rules are persistent configuration and are included in backup/restore and supported remote-configuration mechanisms.
 
-## Limits
+## Capacity
 
-Do not copy the UC100's fixed 16-rule limit unless required by resources. Use implementation-defined limits with clear reporting in the Web UI/API.
+Rule count and action count are determined by available memory/storage and reported by the firmware; no arbitrary low fixed protocol limit is imposed internally.
