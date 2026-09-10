@@ -3,7 +3,6 @@
 namespace multibus::board {
 
 // Heltec WiFi LoRa 32 V4.2 / HTIT-WB32LAF verified onboard mapping.
-// Field-bus pins are intentionally not assigned here yet.
 
 constexpr int USER_BUTTON = 0;
 constexpr int STATUS_LED = 35;
@@ -30,8 +29,27 @@ constexpr int LORA_MISO = 11;
 constexpr int LORA_RST = 12;
 constexpr int LORA_BUSY = 13;
 constexpr int LORA_DIO1 = 14;
+constexpr int LORA_VFEM_CTRL = 7;
 
 constexpr int USB_DM = 19;
 constexpr int USB_DP = 20;
+
+// Rev-A carrier field-bus allocation. UART signals use the ESP32-S3 GPIO matrix.
+constexpr int MODBUS_RX = 2;
+constexpr int MODBUS_TX = 4;
+constexpr int MODBUS_DIR = 5;
+
+constexpr int VEBUS_RX = 47;
+constexpr int VEBUS_TX = 48;
+constexpr int VEBUS_DIR = 6;
+
+// Reserved for optional isolated VE.Bus Standby / Panel Detect interfaces.
+// The corresponding field-side circuitry is DNI until the electrical behaviour
+// has been measured on the target MultiPlus.
+constexpr int VEBUS_STB_CTRL = 43;
+constexpr int VEBUS_PD_CTRL = 44;
+
+// GPIO3, GPIO45 and GPIO46 are intentionally left unused because they are
+// ESP32-S3 strapping pins. GPIO26 is also kept free for board-revision margin.
 
 } // namespace multibus::board

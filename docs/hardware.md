@@ -6,193 +6,279 @@ Reference board:
 
 - Heltec HTIT-WB32LAF V4.2 / WiFi LoRa 32 V4.2
 - ESP32-S3
-- SX1262 LoRa transceiver for EU868
+- SX1262 EU868
 - onboard OLED
-- onboard user button and LED
+- Wi-Fi / BLE
 - native USB-C
-- Wi-Fi and Bluetooth LE
-- BAT connector and battery measurement support
-- SOL connector / solar charging path
-- switchable Vext
+- BAT / SOL support
 - external GNSS connector
 
-External circuitry adds two independent isolated RS485 paths: one for Modbus and one for optional Victron VE.Bus.
+The Rev-A carrier adds protected field power, one isolated Modbus RS485 interface and one independent isolated Victron VE.Bus interface.
+
+## Rev-A electrical architecture
+
+```text
+                     +-----------------------+
+V+ 5..30 V ----------| input protection      |
+V- ------------------| TPS2660 + LMR38020    |
+                     +-----------+-----------+
+                                 |
+                              4.75 V
+                                 |
+                           reverse blocking
+                                 |
+                                 +-------------------> Heltec 5V
+                                                        |
+                         +------------------------------+------------------------------+
+                         |                              |                              |
+                  ISOW1412 #1                    ISOW1412 #2                    board services
+                  Modbus isolated                VE.Bus isolated               GNSS / OLED / LoRa
+                         |                              |
+                      A / B                         RJ45 A / B
+```
+
+`V-` is the carrier/Core supply return. It is not connected to either isolated RS485 bus-side ground. Each ISOW1412 creates its own isolated bus-side supply/reference domain.
 
 ## Field terminal
 
 ```text
-V+   external supply input, target 5-30 V DC
-V-   supply return
-A    Modbus RS485 A
-B    Modbus RS485 B
+V+   external 5-30 V DC input
+V-   external supply return / Core power reference
+A    isolated Modbus RS485 A
+B    isolated Modbus RS485 B
 ```
 
-## Victron RJ45
+The Modbus transceiver bus-side ground remains floating. A separate Modbus COM terminal is not required for Rev A; test pads expose the isolated reference for commissioning and EMC measurements.
 
-| RJ45 pin | Signal | Use |
+## Power input
+
+Rev A uses:
+
+1. **TPS2660** industrial eFuse as the protected 5-30 V input stage.
+2. **LMR38020** synchronous buck converter.
+3. A reverse-current-blocking ideal-diode stage between the carrier supply and the Heltec 5-V pin.
+
+The LMR38020 is configured for approximately **4.75 V** rather than 5.00 V. This gives native USB power priority when USB-C is attached and prevents the external supply path from driving the USB rail through the carrier.
+
+LMR38020 design target:
+
+```text
+VIN         5-30 V after input protection
+VOUT        4.75 V nominal
+fSW         400 kHz
+L           15 uH
+RFBT        100 kOhm
+RFBB        26.7 kOhm, 1 %
+RT          64.9 kOhm, 1 %
+COUT        3 x 22 uF X7R, >= 10 V
+CIN         4.7 uF + 100 nF local, voltage rating >= 50 V
+```
+
+The values follow the LMR38020 5-V/400-kHz reference design, with the feedback divider adjusted to 4.75 V.
+
+### Input protection
+
+TPS2660 requirements:
+
+- reverse-polarity protection
+- reverse-current blocking
+- current limit
+- thermal shutdown
+- surge/overvoltage protection
+- input range covering 5-30 V
+
+Rev-A target current limit is **1 A**. Use the datasheet value close to **11.8 kOhm** for `RILIM`.
+
+UVLO must not use the TPS2660 internal 15-V default because the product supports 5-V input. Configure the UVLO pin so operation down to the specified input range is permitted. OVP is configured above the normal 30-V operating limit while remaining inside downstream component ratings.
+
+Place a field-input TVS, bulk capacitor and local ceramic bypassing directly behind the connector/protection stage.
+
+## USB-C coexistence
+
+The Heltec board carries native USB-C. Carrier power must never back-feed the USB source.
+
+Rev A therefore uses a reverse-blocking ideal-diode/load-switch path from the carrier buck output to the Heltec 5-V pin. The carrier rail is deliberately set below nominal USB VBUS so USB naturally becomes the dominant source when connected.
+
+No firmware-controlled power-source switching is required for normal operation.
+
+## Modbus RS485
+
+Rev A uses **ISOW1412** as the isolated transceiver because it provides:
+
+- reinforced galvanic isolation
+- integrated isolated bus-side power
+- 500-kbit/s data rate, sufficient for all supported Modbus rates
+- 3.3-V-compatible logic-side interface
+- receiver fail-safe behaviour
+
+Half-duplex wiring:
+
+```text
+ESP32 TX ---- D
+ESP32 DIR --- DE and /RE control
+ESP32 RX <--- R
+
+ISOW1412 Y --+
+             +---- RS485 A
+ISOW1412 A --+
+
+ISOW1412 Z --+
+             +---- RS485 B
+ISOW1412 B --+
+```
+
+The paired full-duplex line pins are strapped according to the manufacturer's half-duplex connection guidance.
+
+### Modbus protection and termination
+
+- SM712 or equivalent RS485 TVS at the connector
+- optional 120-ohm termination across A/B via solder jumper
+- optional fail-safe bias footprint on the isolated bus side
+- default Modbus-master population: 680-ohm pull-up to isolated bus supply and 680-ohm pull-down to isolated bus ground, enabled via solder jumpers
+- test pads: `MB_A`, `MB_B`, `MB_GISO`, `MB_VISO`, `MB_TX`, `MB_RX`, `MB_DIR`
+
+Bias resistors must be disabled if another node already provides network bias.
+
+## Victron VE.Bus
+
+VE.Bus has an independent **ISOW1412** transceiver. It never shares the Modbus transceiver or isolated power domain.
+
+Target baud rate: **256000 baud**.
+
+RJ45 assignment for Rev A:
+
+| Pin | Signal | Rev-A connection |
 |---:|---|---|
 | 1 | NC | open |
-| 2 | V+ | optional gateway power source |
-| 3 | GND | VE.Bus reference / power return |
-| 4 | A | VE.Bus differential data A |
-| 5 | B | VE.Bus differential data B |
-| 6 | STB / Standby | optional Victron control |
-| 7 | PD / Panel Detect | optional Victron control |
+| 2 | V+ | test/provisioning power input path, DNI by default |
+| 3 | GND | VE.Bus isolated-side reference / test point |
+| 4 | A | isolated VE.Bus transceiver A |
+| 5 | B | isolated VE.Bus transceiver B |
+| 6 | STB | optional isolated control footprint, DNI |
+| 7 | PD | optional isolated control/sense footprint, DNI |
 | 8 | NC | open |
 
-VE.Bus and VE.Can use similar connectors but different pin assignments and protocols.
+### VE.Bus termination/bias
 
-## Power architecture
+Do not populate additional termination or bias by default. Provide footprints and solder-jumper options only. The production values are determined from measurement on the target MultiPlus network.
 
-Supported source concepts:
+### VE.Bus V+ optional power path
 
-1. external 5-30 V supply on `V+ / V-`
-2. optional VE.Bus V+ / GND supply
-3. board BAT / SOL facilities within the limits of the final power topology
-4. USB-C during service/programming
+RJ45 pin 2 is routed to:
 
-Independent sources must not be directly paralleled or allowed to back-feed one another.
+- protected test pad `VEBUS_VPLUS`
+- optional high-voltage power-input footprint
+- no connection to the system rail in default Rev-A population
+
+This allows VE.Bus-derived gateway power to be enabled later without changing the PCB after voltage/current availability has been measured.
+
+## GPIO allocation
+
+Rev-A carrier assignment:
 
 ```text
-External V+ ---- protection ----+
-                                +---- protected source selection ---- system supply
-VE.Bus V+ ------ protection ----+
+Modbus RX      GPIO2
+Modbus TX      GPIO4
+Modbus DIR     GPIO5
 
-BAT / SOL / USB ---- board power paths subject to board schematic constraints
+VE.Bus RX      GPIO47
+VE.Bus TX      GPIO48
+VE.Bus DIR     GPIO6
+
+VE.Bus STB     GPIO43   optional / DNI interface
+VE.Bus PD      GPIO44   optional / DNI interface
 ```
 
-The final design must preserve safe isolation when USB is connected while field buses are attached.
+GPIO3, GPIO45 and GPIO46 are intentionally not used because they are ESP32-S3 strapping pins. GPIO26 remains reserved as routing/revision margin.
 
-## Electrical isolation
+The complete board mapping is defined in `include/board/BoardPins.h`.
 
-VE.Bus and Modbus are separate electrical domains.
-
-```text
-VE.Bus A/B <-> isolated RS485 <-> ESP32-S3
-Modbus A/B <-> isolated RS485 <-> ESP32-S3
-```
-
-The two buses never share one switched transceiver.
-
-## VE.Bus interface
-
-Requirements:
-
-- 256000 baud capability
-- isolated differential interface
-- explicit DE/RE control for production hardware unless measured timing proves an alternative safe
-- validated A/B polarity
-- validated bias/termination behaviour
-- validated turnaround timing
-
-Initial compatibility target: Victron MultiPlus 12/500/20-16.
-
-## Modbus interface
-
-Requirements:
-
-- independent isolated RS485 path
-- configurable baud rate
-- configurable parity
-- configurable stop bits
-- Modbus RTU master or slave
-- raw/transparent access
-- selectable 120-ohm termination where practical
-- defined fail-safe/biasing strategy
-
-## Verified onboard pin map
-
-HTIT-WB32LAF V4.2 onboard resources used by the firmware abstraction:
+## Existing Heltec resources
 
 ```text
-GPIO0   USER / PRG button
-GPIO1   battery ADC input
-GPIO35  user LED
-GPIO36  Vext control
-GPIO37  battery ADC control
-
+GPIO0   USER / PRG
+GPIO1   battery ADC
+GPIO35  LED
+GPIO36  Vext
+GPIO37  ADC control
 GPIO17  OLED SDA
 GPIO18  OLED SCL
 GPIO21  OLED reset
-
-GPIO34  GNSS power control
+GPIO34  GNSS power
 GPIO38  GNSS RX
 GPIO39  GNSS TX
 GPIO40  GNSS wake
 GPIO41  GNSS PPS
 GPIO42  GNSS reset
-
-GPIO8..14  SX1262-related signals according to the board pin map
+GPIO7   LoRa RF/FEM control
+GPIO8   LoRa NSS
+GPIO9   LoRa SCK
+GPIO10  LoRa MOSI
+GPIO11  LoRa MISO
+GPIO12  LoRa reset
+GPIO13  LoRa busy
+GPIO14  LoRa DIO1
+GPIO19  USB D-
+GPIO20  USB D+
 ```
-
-VE.Bus and Modbus UART/DE/RE pins are assigned only from pins remaining free after all onboard functions are accounted for.
-
-## OLED
-
-The OLED is the local status and commissioning interface.
-
-Display content includes:
-
-- device name
-- Wi-Fi state / IP / hostname
-- AP SSID and password during commissioning
-- one-time administrator password during initial setup
-- LoRaWAN state
-- Modbus state
-- Victron state
-- GNSS state
-- battery/power state
-- alarms and diagnostics
-- factory-reset countdown
-
-## User button
-
-- short press: display navigation/context action
-- deliberate long press: complete factory reset
-- no password-only reset path
-
-## BAT / SOL / Vext
-
-Platform power services expose, where electrically detectable:
-
-- battery voltage
-- battery-present state
-- charging state
-- solar/external charging state
-- Vext enable/disable
-
-Safe simultaneous use of USB, external V+, BAT, SOL and VE.Bus-derived power is a hardware validation requirement.
 
 ## GNSS
 
-The GNSS interface provides:
+Use the Heltec external GNSS interface. Rev A does not duplicate the GNSS level shifting or power-control circuitry already provided by the reference board.
 
-- UART RX/TX
-- power control
-- wake
-- reset
-- PPS
+The preferred initial module is the same electrical class as the Heltec expansion option; final receiver selection does not affect carrier routing.
 
-The GNSS component normalizes position/time/movement information for the Core.
+## PCB layout rules
 
-## USB-C
+- 4-layer PCB preferred.
+- Keep the LMR38020 hot loop compact and away from LoRa/GNSS antennas.
+- Maintain the ISOW1412 isolation-barrier clearance with no copper pour crossing the barrier.
+- Keep Modbus and VE.Bus isolated domains physically separated.
+- Place TVS devices at their connectors before long PCB traces.
+- Route RS485 A/B as coupled differential pairs with no stubs except very short protection/test-point branches.
+- Keep the LoRa antenna keep-out from the Heltec reference design completely free of copper, enclosure metal and tall components.
+- Keep GNSS antenna/feed away from switching-node copper.
+- Provide accessible test points for all supply rails and both UARTs.
 
-Native ESP32-S3 USB is used for:
+## Required Rev-A test points
 
-- flashing
-- service / diagnostics
-- recovery
-- firmware update
-- optional MK2/MK3 compatibility transport when Victron is enabled
+```text
+VIN_FIELD
+VPROTECTED
+VCORE_IN_4V75
+CORE_GND
+3V3
 
-## Bluetooth LE
+MB_A
+MB_B
+MB_VISO
+MB_GISO
+MB_TX
+MB_RX
+MB_DIR
 
-BLE is a platform radio. Generic administration uses Wi-Fi/WebUI. Victron may additionally use BLE for VictronConnect compatibility.
+VE_A
+VE_B
+VE_VISO
+VE_GISO
+VE_TX
+VE_RX
+VE_DIR
+VEBUS_VPLUS
+VEBUS_GND
+```
 
-## LoRa
+## Hardware freeze status
 
-The onboard SX1262 is owned by exactly one LoRa backend at a time:
+The Rev-A schematic topology, interfaces, GPIO allocation and default population are fixed.
 
-- LoRaWAN (`L=W`)
-- Meshtastic (`L=M`)
-- disabled (`L=0`)
+Items that remain to be measured during bring-up are validation parameters rather than architecture blockers:
+
+- actual VE.Bus A/B polarity and idle levels
+- VE.Bus native termination/bias behaviour
+- VE.Bus V+ voltage/current availability
+- STB/PD electrical behaviour
+- EMC/surge performance of the assembled PCB
+- maximum thermal rise at 5-V input and maximum load
+
+See `docs/hardware-rev-a.md` for the schematic capture specification and BOM.

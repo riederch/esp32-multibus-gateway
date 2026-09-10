@@ -1,56 +1,60 @@
 # Validation tasks
 
-Open technical items that require measurement, interoperability testing or final hardware selection.
+Open technical items that require measurement, interoperability testing or post-layout validation.
 
-## VE.Bus electrical interface
+## VE.Bus electrical bring-up
 
-For the Victron MultiPlus 12/500/20-16 validate:
+For the Victron MultiPlus 12/500/20-16 validate on the assembled Rev-A carrier:
 
-- RJ45 pinout on the actual device
-- V+ voltage and available current
-- behaviour in on/off/standby/low-power states
+- actual RJ45 pinout on the target device
 - A/B polarity
-- signal levels
-- bias/termination behaviour
+- idle/common-mode signal levels
+- native bias/termination behaviour
 - receive/transmit turnaround timing
-- explicit DE/RE timing
+- explicit DE/RE timing margin at 256000 baud
+- operation in on/off/standby/low-power states
 
 Begin with passive receive/sniffing before enabling transmission.
 
-## Power architecture
+## VE.Bus optional power and control
 
-Validate a final topology for:
+Measure before populating optional Rev-A footprints:
 
-- external 5-30 V input
-- optional VE.Bus-derived supply
-- USB-C
-- BAT / SOL board paths
+- RJ45 V+ voltage over all MultiPlus operating states
+- available current and source impedance
+- STB electrical levels and required drive behaviour
+- PD electrical levels and required sense/drive behaviour
 
-Requirements:
+The Rev-A PCB already reserves protected power and isolated STB/PD interface options; these measurements determine population, not PCB topology.
 
-- no back-feed between sources
-- reverse-polarity protection
-- transient protection
-- safe source selection / ORing
-- galvanic isolation compatible with USB
-- acceptable efficiency and quiescent current
+## Power / thermal validation
 
-## Modbus RS485 hardware
+On the assembled carrier validate:
 
-Validate:
+- correct operation from 5 V through 30 V input
+- TPS2660 current limiting and reverse-polarity behaviour
+- LMR38020 4.75-V regulation and startup
+- USB/carrier simultaneous connection with no back-feed
+- BAT/SOL coexistence with the selected Heltec V4.2 board
+- regulator and eFuse temperatures at worst-case load and ambient
+- conducted/radiated switching noise near LoRa and GNSS
 
-- isolated transceiver selection
-- 3.3 V logic compatibility
-- DE/RE timing
-- selectable 120-ohm termination
-- fail-safe biasing
+## Modbus RS485 bring-up
+
+Validate the fixed Rev-A ISOW1412 implementation:
+
 - A/B polarity
-- maximum baud rate
-- final free GPIO allocation
+- DE/RE timing
+- 9.6/19.2/115.2 kbit/s operation and margin testing up to 256 kbit/s
+- selectable 120-ohm termination
+- optional 680-ohm fail-safe bias
+- operation with bias provided by another node
+- ESD/EFT behaviour at the field connector
+- communication with representative deployed meters/drives
 
 ## GNSS module
 
-Validate the exact external module:
+Validate the exact external module selected for deployment:
 
 - supply requirements
 - default baud/protocol
@@ -58,6 +62,8 @@ Validate the exact external module:
 - PPS behaviour
 - wake/reset/power-control behaviour
 - current consumption
+
+Carrier PCB routing is not dependent on this choice.
 
 ## Native USB / MK3 compatibility
 
@@ -69,7 +75,7 @@ Validate:
 - MK2/MK3 byte-stream transport
 - VictronConnect interoperability
 
-A genuine FTDI USB-UART implementation remains an acceptable hardware fallback if required for host compatibility.
+A genuine FTDI USB-UART implementation remains an acceptable future hardware variant if host compatibility requires it.
 
 ## Victron BLE compatibility
 
@@ -86,7 +92,6 @@ Validate:
 
 - EU868
 - OTAA
-- ABP if required
 - Class A / C
 - confirmed/unconfirmed uplinks
 - ADR
@@ -95,7 +100,7 @@ Validate:
 - ChirpStack interoperability
 - payload size/fragmentation
 - FUOTA feasibility
-- FPort-85 compatibility vectors against the complete UC100 V2 command set
+- FPort-85 compatibility vectors against the complete applicable UC100 V2 command set
 
 ## Storage
 
@@ -118,6 +123,17 @@ Validate/harden:
 - backup encryption
 - HTTPS/certificate strategy
 
+## EMC / environmental pre-compliance
+
+Before calling Rev A production-ready validate:
+
+- ESD at field and RJ45 connectors
+- EFT/burst on field supply and RS485
+- surge strategy appropriate to the deployment environment
+- conducted emissions of the buck converter and both isolated transceivers
+- radiated emissions / immunity interaction with LoRa, Wi-Fi and GNSS
+- thermal soak and cold-start behaviour
+
 ## Completion rule
 
-A resolved item moves into the relevant permanent specification or hardware document and is removed from this list.
+A resolved item moves into the relevant permanent specification or hardware document and is removed from this list. Hardware topology already frozen in `docs/hardware-rev-a.md` is not reopened by ordinary bring-up measurements unless the validation result demonstrates a design defect.
