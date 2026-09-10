@@ -1,48 +1,44 @@
 #include <Arduino.h>
-#include "config.h"
+#include "core/AppConfig.h"
+#include "core/Application.h"
 
-HardwareSerial VeBusSerial(cfg::VEBUS_UART_NUM);
-HardwareSerial ModbusSerial(cfg::MODBUS_UART_NUM);
+using namespace multibus;
 
-static void initBusPins() {
-    pinMode(cfg::VEBUS_DE_PIN, OUTPUT);
-    digitalWrite(cfg::VEBUS_DE_PIN, LOW);
+namespace {
 
-    pinMode(cfg::MODBUS_DE_PIN, OUTPUT);
-    digitalWrite(cfg::MODBUS_DE_PIN, LOW);
-}
+// Safe development default: all optional protocol components are disabled.
+// Runtime persistence / Web UI configuration will replace this static bootstrap
+// configuration in the next implementation step.
+AppConfig appConfig{
+    VictronMode::Disabled,
+    LoRaMode::Disabled,
+    ModbusMode::Disabled,
+    GnssMode::Disabled,
+};
 
-static void initSerialBuses() {
-    VeBusSerial.begin(
-        cfg::VEBUS_BAUD,
-        SERIAL_8N1,
-        cfg::VEBUS_RX_PIN,
-        cfg::VEBUS_TX_PIN
-    );
+Application app(appConfig);
+bool appReady = false;
 
-    ModbusSerial.begin(
-        cfg::MODBUS_BAUD,
-        SERIAL_8E1,
-        cfg::MODBUS_RX_PIN,
-        cfg::MODBUS_TX_PIN
-    );
-}
+} // namespace
 
 void setup() {
     Serial.begin(115200);
-    delay(500);
-
-    initBusPins();
-    initSerialBuses();
+    delay(300);
 
     Serial.println();
     Serial.println("ESP32 MultiBus Gateway");
-    Serial.println("VE.Bus and Modbus UARTs initialized.");
-    Serial.println("No protocol traffic is transmitted yet.");
+    Serial.println("Starting modular application core...");
+
+    appReady = app.begin();
+    if (!appReady) {
+        Serial.println("Application startup failed; protocol hardware remains inactive.");
+    }
 }
 
 void loop() {
-    // Intentionally passive for the initial scaffold.
-    // VE.Bus and Modbus protocol implementations will be added separately.
-    delay(1000);
+    if (appReady) {
+        app.loop();
+    }
+
+    delay(10);
 }
