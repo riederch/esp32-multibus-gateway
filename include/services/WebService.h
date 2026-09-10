@@ -62,7 +62,7 @@ private:
                "</head><body>";
     }
 
-    bool authenticated() const {
+    bool authenticated() {
         if (sessionToken_.isEmpty()) return false;
         const String cookie = server_.header("Cookie");
         return cookie.indexOf("MBSESSION=" + sessionToken_) >= 0;
