@@ -11,33 +11,37 @@ The LoRaWAN layer exposes two protocol profiles:
 
 FPort 85 is reserved for the Milesight UC100 V2-compatible wire protocol.
 
-The compatibility goal is strict:
+The compatibility target is strict for the complete non-D2D UC100 V2 LoRaWAN command set:
 
 - existing UC100 V2 uplink decoders must accept MultiBus compatibility payloads
-- existing UC100 V2 downlink encoders must remain valid for the standard command set
+- existing UC100 V2 downlink encoders must remain valid
 - existing command identifiers, field meanings, byte order and framing must not be redefined
+- command behaviour must match the reference semantics wherever the corresponding feature exists
 - unsupported/reserved identifiers remain reserved
-- Milesight D2D radio operation is not implemented
+- proprietary Milesight D2D operation is the only deliberate compatibility exception
 
-The UC100 is used here as a protocol-compatibility reference; the internal MultiBus architecture is independent of it.
+The UC100 is used only as a protocol-compatibility and feature-design reference; the internal MultiBus architecture is independent of it.
 
-## Standard command coverage
+## Command coverage
 
-The compatibility implementation must cover the complete applicable UC100 V2 LoRaWAN command set, including configuration and control for:
+The compatibility implementation must cover the full applicable command set, including:
 
-- reporting intervals and reporting behaviour
+- reporting interval and periodic reporting controls
+- reboot and LoRaWAN rejoin
+- data storage
+- retransmission enable/disable and interval
+- UTC timezone and daylight-saving configuration
+- LNS time synchronization
 - Modbus/RS485 serial settings
-- Modbus channels
-- channel reads/reports
-- threshold/change alarms and alarm releases
-- retransmission/store-and-forward controls
-- history retrieval/control
-- time/timezone/DST related settings
-- rule/IF-THEN related controls where represented by the protocol
+- Modbus channel create/configure/delete/name operations
+- channel acquisition/reporting
+- threshold alarms, alarm release and change alarms
+- local rule/IF-THEN configuration where represented by the protocol
 - raw/transparent RS485 operations
-- device reboot/rejoin and other standard management commands
+- historical-data retrieval and transfer controls
+- all other non-D2D management/configuration commands defined by the reference protocol
 
-Compatibility work is considered complete only when the protocol table has been checked command-by-command against the current UC100 V2 protocol documentation and covered by encoder/decoder tests.
+Compatibility is complete only after the protocol table has been verified command-by-command against the current UC100 V2 protocol documentation and covered by encoder/decoder tests.
 
 ## Generic channel bridge
 
@@ -59,13 +63,15 @@ victron:vebus/battery.voltage
     -> standard compatibility channel uplink
 ```
 
-This lets Victron-derived data use the same telemetry, alarm and history framing as Modbus-derived values.
+This lets Victron-derived data use the same telemetry, alarm, history and retransmission framing as Modbus-derived values.
 
-## Victron configuration
+## Victron channel bindings
 
-The original compatibility command set cannot describe a VE.Bus property binding. Therefore source binding is separated from channel behaviour.
+The compatibility protocol can configure Modbus channels because its source model contains Modbus slave/register information. It has no native representation for a VE.Bus property.
 
-A Victron channel is created/configured through the MultiBus extension profile or Web UI:
+MultiBus therefore separates **source binding** from **channel behaviour**.
+
+A Victron-backed channel is bound through the MultiBus extension profile or Web UI:
 
 ```text
 channel 20
@@ -73,38 +79,38 @@ source = victron:vebus
 point  = battery.voltage
 ```
 
-After binding, channel 20 participates in the normal compatibility mechanisms:
+After binding, channel 20 behaves like a normal compatibility channel for all operations that apply to a logical channel:
 
-- reporting
-- alarms
+- periodic reporting
+- alarms and alarm releases
 - history
 - retransmission
-- remote enable/disable or interval controls where the standard command applies to the logical channel
+- enable/disable and reporting controls where defined by the compatibility protocol
 
-No fake Modbus slave ID or register address is required internally.
+No fake Modbus slave ID or register address is created internally.
 
 ## MultiBus extension profile
 
 Features that cannot be represented without changing FPort-85 semantics use a separate extension FPort.
 
-Extension examples:
+Extension functions include:
 
 - bind a channel to a Victron property
 - bind a channel to GNSS/platform I/O
-- Victron-specific commands/settings
+- Victron-specific settings/commands
 - capability discovery
-- source discovery
-- platform-specific diagnostics
-- future optional functions
+- source/point discovery
+- platform diagnostics
+- additional features introduced by MultiBus
 
-Extension messages must be independently versioned.
+Extension messages are independently versioned.
 
 ## Compatibility invariants
 
-- FPort 85 is never used for incompatible MultiBus-specific payloads.
+- FPort 85 never carries incompatible MultiBus-specific payloads.
 - Existing FPort-85 command IDs are never repurposed.
-- Extension commands never rely on a standard decoder silently interpreting new semantics.
-- A compatibility channel has stable logical channel identity regardless of its native source.
+- Extension commands never depend on a standard decoder silently interpreting new semantics.
+- A compatibility channel keeps a stable logical channel identity regardless of its native source.
 - Transport-specific source details remain inside source adapters.
 
 ## Testing
@@ -116,7 +122,7 @@ Maintain protocol-vector tests containing:
 - alarm/release vectors
 - history/retransmission vectors
 - raw RS485 command vectors
-- round-trip tests for all supported configuration commands
+- round-trip tests for every supported configuration command
 - regression tests proving extension traffic never appears on FPort 85
 
-Where public vendor examples exist, preserve those binary vectors as interoperability fixtures without copying copyrighted explanatory text.
+Public vendor binary examples may be retained as interoperability test vectors without reproducing copyrighted explanatory material.
