@@ -8,6 +8,7 @@
 #include "DeviceIdentity.h"
 #include "SecurityStore.h"
 #include "components/ComponentStubs.h"
+#include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
 
@@ -36,6 +37,11 @@ public:
             return false;
         }
 
+        if (!board_.begin(configStore_, security_)) {
+            Serial.println("Failed to initialize board service.");
+            return false;
+        }
+
         const auto validation = validateConfig(config_.components);
         if (validation != ConfigValidationResult::Ok) {
             Serial.printf("Configuration rejected: %s\n", toString(validation));
@@ -55,6 +61,9 @@ public:
             return false;
         }
 
+        capabilities_.add("board.user-button");
+        capabilities_.add("board.status-led");
+        capabilities_.add("board.factory-reset");
         capabilities_.add("network.wifi");
         capabilities_.add("network.webui");
         if (network_.apActive()) capabilities_.add("network.ap");
@@ -70,6 +79,7 @@ public:
     }
 
     void loop() {
+        board_.loop();
         network_.loop();
         web_.loop();
         victron_.loop();
@@ -82,6 +92,7 @@ public:
     const CapabilityRegistry& capabilities() const { return capabilities_; }
     const SecurityStore& security() const { return security_; }
     const NetworkService& network() const { return network_; }
+    const BoardService& board() const { return board_; }
 
 private:
     void configureComponents() {
@@ -131,6 +142,7 @@ private:
     CapabilityRegistry capabilities_;
     ConfigStore configStore_;
     SecurityStore security_;
+    BoardService board_;
     NetworkService network_;
     WebService web_;
     VictronComponent victron_;
