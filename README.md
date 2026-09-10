@@ -142,6 +142,31 @@ Board resources are exposed as shared platform services rather than being tied t
 - `docs/validation.md` - technical items that still require measurement or reverse engineering
 - `docs/backlog.md` - later ideas such as Meshtastic
 
-## Status
+## Implementation status
 
-Specification and early firmware scaffold. Electrical interfaces, exact HTIT-WB32LAF V4.2 GPIO allocation, VE.Bus supply capability and Victron interoperability must be validated before connecting experimental hardware to a live inverter/charger installation.
+Implemented foundation:
+
+- runtime `V/L/M/G` configuration model
+- component lifecycle and capability registry
+- NVS-backed persistent device/network configuration
+- generated AP and initial administrator credentials
+- salted iterated administrator password hashing
+- Wi-Fi client mode with AP fallback and captive-DNS support
+- authenticated local Web UI
+- forced administrator-password change after first login
+- in-memory authenticated session and login throttling
+- component/network configuration through the Web UI
+- versioned JSON backup download and validated restore upload
+- PlatformIO build CI
+
+Still intentionally inactive until hardware mapping/protocol validation:
+
+- VE.Bus electrical transport and protocol traffic
+- Modbus RS485 transport
+- SX1262 LoRaWAN implementation
+- GNSS UART implementation
+- OLED/button board service
+- BAT/SOL/Vext monitoring/control
+- Victron BLE and MK3 compatibility experiments
+
+The current firmware uses a generic ESP32-S3 PlatformIO target for compile validation. Exact HTIT-WB32LAF V4.2 GPIO allocation and board-specific services remain validation tasks before field-bus hardware is enabled.
