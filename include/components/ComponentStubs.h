@@ -9,7 +9,7 @@ namespace multibus {
 
 class VictronComponent final : public Component {
 public:
-    explicit VictronComponent(VictronMode mode) : mode_(mode) {}
+    void setMode(VictronMode mode) { mode_ = mode; active_ = false; }
     const char* name() const override { return "victron"; }
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ != VictronMode::Enabled) return true;
@@ -23,13 +23,13 @@ public:
     void loop() override {}
     bool active() const { return active_; }
 private:
-    VictronMode mode_;
+    VictronMode mode_ = VictronMode::Disabled;
     bool active_ = false;
 };
 
 class LoRaComponent final : public Component {
 public:
-    explicit LoRaComponent(LoRaMode mode) : mode_(mode) {}
+    void setMode(LoRaMode mode) { mode_ = mode; active_ = false; }
     const char* name() const override { return "lora"; }
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ == LoRaMode::Disabled) return true;
@@ -43,13 +43,13 @@ public:
     void loop() override {}
     bool active() const { return active_; }
 private:
-    LoRaMode mode_;
+    LoRaMode mode_ = LoRaMode::Disabled;
     bool active_ = false;
 };
 
 class ModbusComponent final : public Component {
 public:
-    explicit ModbusComponent(ModbusMode mode) : mode_(mode) {}
+    void setMode(ModbusMode mode) { mode_ = mode; active_ = false; }
     const char* name() const override { return "modbus"; }
     bool begin(CapabilityRegistry& capabilities) override {
         switch (mode_) {
@@ -73,13 +73,13 @@ public:
     void loop() override {}
     bool active() const { return active_; }
 private:
-    ModbusMode mode_;
+    ModbusMode mode_ = ModbusMode::Disabled;
     bool active_ = false;
 };
 
 class GnssComponent final : public Component {
 public:
-    explicit GnssComponent(GnssMode mode) : mode_(mode) {}
+    void setMode(GnssMode mode) { mode_ = mode; active_ = false; }
     const char* name() const override { return "gnss"; }
     bool begin(CapabilityRegistry& capabilities) override {
         if (mode_ != GnssMode::Enabled) return true;
@@ -92,7 +92,7 @@ public:
     void loop() override {}
     bool active() const { return active_; }
 private:
-    GnssMode mode_;
+    GnssMode mode_ = GnssMode::Disabled;
     bool active_ = false;
 };
 
