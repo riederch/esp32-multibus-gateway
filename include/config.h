@@ -4,18 +4,15 @@
 
 namespace cfg {
 
-// UART assignments are intentionally separated so VE.Bus and Modbus never
-// share a transceiver. Adjust GPIOs to the actual prototype wiring.
-constexpr int VEBUS_UART_NUM = 1;
-constexpr int VEBUS_TX_PIN = 17;
-constexpr int VEBUS_RX_PIN = 18;
-constexpr int VEBUS_DE_PIN = 16;
-constexpr uint32_t VEBUS_BAUD = 256000;
+constexpr uint32_t SERIAL_MONITOR_BAUD = 115200;
 
-constexpr int MODBUS_UART_NUM = 2;
-constexpr int MODBUS_TX_PIN = 5;
-constexpr int MODBUS_RX_PIN = 6;
-constexpr int MODBUS_DE_PIN = 7;
-constexpr uint32_t MODBUS_BAUD = 19200;
+// Hardware pin assignments are intentionally NOT defined here.
+// The previous values were placeholders from the early ESP32-S3 DevKit scaffold.
+// The reference platform is now HTIT-WB32LAF V4.2 and its exact pin allocation
+// must be validated against the board schematic before any field-bus hardware is
+// enabled. Pin mappings will live in a dedicated board abstraction.
+
+constexpr uint32_t VEBUS_BAUD = 256000;
+constexpr uint32_t MODBUS_DEFAULT_BAUD = 19200;
 
 } // namespace cfg
