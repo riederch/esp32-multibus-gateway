@@ -18,15 +18,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run FPort 85 codec tests
-        run: |
-          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_codec_test.cpp -o /tmp/fport85_codec_test
-          /tmp/fport85_codec_test
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
+      - name: Validate Rev A Heltec pin map
+        run: python tests/rev_a_pinmap_test.py
+
+      - name: Run FPort 85 codec tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_codec_test.cpp -o /tmp/fport85_codec_test
+          /tmp/fport85_codec_test
 
       - name: Install PlatformIO
         run: pip install platformio
