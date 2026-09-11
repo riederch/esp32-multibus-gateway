@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "modbus/ModbusChannel.h"
+#include "modbus/Rs485Settings.h"
 
 namespace multibus {
 namespace lorawan {
@@ -37,6 +38,10 @@ enum class ModbusChannelOperation : uint8_t {
 struct ModbusChannelCommand {
     ModbusChannelOperation operation = ModbusChannelOperation::Upsert;
     modbus::ChannelConfig channel;
+};
+
+struct Rs485SettingsCommand {
+    modbus::Rs485SerialSettings settings;
 };
 
 struct PeriodicValue {
@@ -78,6 +83,32 @@ public:
     static bool isVerifiedUplinkPrefix(const CommandHeader& header) {
         return (header.channelId == kModbusChannel && header.type == kModbusChannelDataType) ||
                (header.channelId == kSystemChannel && header.type == kCollectionExceptionType);
+    }
+
+    static DecodeStatus decodeRs485SettingsCommand(const uint8_t* payload,
+                                                    size_t length,
+                                                    Rs485SettingsCommand& command,
+                                                    size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 9) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRs485ConfigType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        modbus::Rs485SerialSettings settings;
+        settings.baudRate = static_cast<uint32_t>(payload[2]) |
+                            (static_cast<uint32_t>(payload[3]) << 8U) |
+                            (static_cast<uint32_t>(payload[4]) << 16U) |
+                            (static_cast<uint32_t>(payload[5]) << 24U);
+        settings.dataBits = payload[6];
+        settings.stopBits = static_cast<modbus::Rs485StopBits>(payload[7]);
+        settings.parity = static_cast<modbus::Rs485Parity>(payload[8]);
+        if (!modbus::validRs485SerialSettings(settings)) return DecodeStatus::Invalid;
+
+        command = Rs485SettingsCommand{};
+        command.settings = settings;
+        consumed = 9;
+        return DecodeStatus::Ok;
     }
 
     static DecodeStatus decodeModbusChannelCommand(const uint8_t* payload,
