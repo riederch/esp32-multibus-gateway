@@ -1,51 +1,104 @@
 # KiCad Rev-A schematic
 
-This directory contains the first electrical schematic capture for the MultiBus Gateway Rev A carrier.
+This directory contains the Rev-A electrical capture for the MultiBus Gateway carrier around the Heltec HTIT-WB32LAF V4.2.
 
 ## Files
 
-- `multibus-rev-a.sch` - KiCad legacy schematic, importable by current KiCad versions
+- `multibus-rev-a.sch` - initial KiCad legacy capture baseline
+- `multibus-rev-a-detail.sch` - current detailed electrical working schematic; use this for KiCad import/conversion and ERC
 - `multibus-rev-a.lib` - local custom symbols for the Heltec carrier, TPS2660, LMR38020, ISOW1412 and isolated VE.Bus DC/DC module
 - `sym-lib-table` - local symbol-library registration
+- `bom-critical.csv` - current critical component/value/population table
 
-## Scope captured
+## Current electrical scope
 
-The schematic contains the frozen Rev-A topology:
+The detailed schematic contains:
 
-- J1 field connector: external supply plus isolated Modbus A/B
-- TPS2660 protected external power input
-- LMR38020 external DC/DC stage
-- post-conversion `D_EXT` / `D_VE` low-voltage source ORing
+- J1 field connector: external 5-30 V supply plus isolated Modbus A/B
+- fuse/PTC and 33-V-class TVS input protection
+- TPS26600 protected/reverse-polarity input stage
+- LMR38020 400-kHz buck stage with explicit RT, feedback, bootstrap, inductor and output capacitors
+- independent `D_EXT` / `D_VE` low-voltage source ORing
 - galvanically isolated VE.Bus power converter placeholder selected after `VEBUS_VPLUS` measurement
-- Heltec V4.2 carrier connections
+- `JP_USB_SAFE` physical disconnect between `SYS_5V` and the Heltec 5-V input
+- Heltec V4.2 carrier GPIO connections
 - dedicated ISOW1412 Modbus interface
 - dedicated ISOW1412 VE.Bus interface
 - fixed UART/DIR GPIO assignments
+- Modbus TVS, termination and bias requirements
+- VE.Bus TVS and optional termination/bias requirements
 - VE.Bus STB/PD as DNI interface requirements
-- required power, isolation and UART test nets
+- power/isolation/UART test nets
 
-## Important capture status
+## Frozen baseline values
 
-This is an electrical capture baseline, not yet a PCB-release artifact.
+```text
+TPS26600PWP
+  R_ILIM      11.8 kOhm 1 %
+  C_dVdT      22 nF
+  UVLO        tied to IN
+  OVP         tied to RTN
+  MODE        tied to RTN
 
-The execution environment used to generate it does not contain `kicad-cli`, so it has not yet passed KiCad ERC or automated schematic conversion. On first opening in a current KiCad version:
+LMR38020SDDAR
+  fSW         400 kHz
+  R_RT        64.9 kOhm 1 %
+  R_FBT       100 kOhm 1 %
+  R_FBB       23.7 kOhm 1 %
+  L           15 uH, Isat >= 3 A
+  C_BOOT      100 nF
+  COUT        3 x 22 uF X7R
 
-1. import/convert the legacy schematic to `.kicad_sch`
-2. confirm all custom symbol pins against the selected manufacturer package suffix
-3. split the design into the planned hierarchical sheets if desired
-4. add/finalize all programming passives around TPS2660 and LMR38020
-5. select the exact `D_EXT`/`D_VE` devices after voltage-drop/current calculation
-6. select the isolated VE.Bus DC/DC module after measuring `VEBUS_VPLUS`
-7. add the final SM712, termination/bias jumpers, decoupling, ferrites and test-point symbols
-8. assign footprints
-9. run ERC with zero unexplained errors before PCB layout
+ISOW1412DFM x2
+  VIO         3V3
+  VDD         SYS_5V
+  MODE        VISOOUT for 5-V isolated side
+  EN/FLT      4.7-kOhm pull-up to 3V3
+```
+
+`U1_RTN` is not `CORE_GND`; preserving this distinction is required for TPS26600 reverse-polarity protection.
+
+## USB service rule
+
+Heltec V4.2 must not be powered simultaneously from USB and its external 5-V pin.
+
+```text
+Normal field operation:  JP_USB_SAFE CLOSED
+USB service/programming: JP_USB_SAFE OPEN before USB-C connection
+```
+
+The PCB silkscreen must label this clearly as `OPEN FOR USB`.
+
+## Still measurement-dependent
+
+- exact isolated VE.Bus DC/DC input range/part after measuring `VEBUS_VPLUS`
+- exact VE.Bus power-input TVS/fuse coordination
+- final `D_EXT`/`D_VE` verification for forward drop and thermal margin
+- VE.Bus A/B polarity and network bias/termination
+- STB/PD electrical implementation
+
+## KiCad release workflow
+
+The execution environment used to generate these files does not contain `kicad-cli`, so the schematics have not yet passed KiCad ERC.
+
+Before PCB routing:
+
+1. open/import `multibus-rev-a-detail.sch` in the target KiCad version
+2. convert/save to current `.kicad_sch`
+3. verify every custom symbol pin against the exact package datasheet
+4. assign footprints
+5. split into the planned hierarchical sheets if useful
+6. run ERC with zero unexplained errors
+7. generate/review BOM and netlist
+8. preserve all isolation barriers during PCB layout
 
 ## Source of truth
 
 Electrical intent is defined by:
 
+- `docs/hardware.md`
 - `docs/hardware-rev-a.md`
 - `docs/power-topology-rev-a.md`
-- `docs/hardware.md`
+- `hardware/rev-a/bom-critical.csv`
 
-If the KiCad capture and those documents disagree, resolve the discrepancy before PCB release rather than silently choosing one.
+If the schematic and these documents disagree, resolve the discrepancy before PCB release.
