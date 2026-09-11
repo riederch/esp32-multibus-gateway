@@ -61,6 +61,33 @@ ISOW1412DFM x2
 
 `U1_RTN` is not `CORE_GND`; preserving this distinction is required for TPS26600 reverse-polarity protection.
 
+## Verified Heltec physical mapping
+
+The PCB-netlisted design must use `HELTEC_V4_2_PHYSICAL` together with the `Heltec_WiFi_LoRa_32_V4_2` 36-pad footprint.
+
+Verified Rev-A used pins:
+
+```text
+pad  1  J2.1   GND      -> CORE_GND
+pad  2  J2.2   5V       -> HELTEC_5V
+pad  5  J2.5   GPIO44   -> VEBUS_PD_CTRL
+pad  6  J2.6   GPIO43   -> VEBUS_STB_CTRL
+pad  8  J2.8   GPIO0    -> onboard USER/PRG button
+pad 13  J2.13  GPIO47   -> VEBUS_RX
+pad 14  J2.14  GPIO48   -> VEBUS_TX
+pad 19  J3.1   GND      -> CORE_GND
+pad 20  J3.2   3V3      -> 3V3
+pad 21  J3.3   3V3      -> 3V3
+pad 31  J3.13  GPIO2    -> MODBUS_RX
+pad 33  J3.15  GPIO4    -> MODBUS_TX
+pad 34  J3.16  GPIO5    -> MODBUS_DIR
+pad 35  J3.17  GPIO6    -> VEBUS_DIR
+```
+
+Important correction: Heltec V4.2 `J2.8` is `GPIO0 / PRG`, not GPIO10. `GPIO10` belongs to the onboard LoRa SPI path and is not the USER/PRG header signal.
+
+GPIO3, GPIO45 and GPIO46 remain unused because they are ESP32-S3 strapping pins.
+
 ## Verified critical land patterns
 
 The current footprint library contains explicit manufacturer-based land patterns for:
@@ -106,13 +133,17 @@ Before routing/release:
 
 1. open/import `multibus-rev-a-detail.sch` in the target KiCad version
 2. save as current `.kicad_sch`
-3. replace the compact Heltec logical symbol with the verified 36-pin physical symbol for netlisting
-4. assign the verified footprints, including the TI footprints already present in `multibus-rev-a.pretty`
-5. run ERC with zero unexplained errors
-6. update PCB from schematic into `multibus-rev-a-placement-v2.kicad_pcb` or a clean successor
-7. route while preserving all isolation and RF keep-outs
-8. run DRC and manually inspect both isolation barriers
-9. generate and review Gerber/drill/BOM/position outputs before ordering
+3. replace the compact Heltec logical symbol with `HELTEC_V4_2_PHYSICAL`
+4. verify the used physical pins against the mapping above and assign footprint `multibus-rev-a:Heltec_WiFi_LoRa_32_V4_2`
+5. assign all remaining verified footprints, including the TI footprints already present in `multibus-rev-a.pretty`
+6. run ERC with zero unexplained errors
+7. update PCB from schematic into `multibus-rev-a-placement-v2.kicad_pcb` or a clean successor
+8. verify that PCB pad/net assignment matches the physical mapping above before routing
+9. route while preserving all isolation and RF keep-outs
+10. run DRC and manually inspect both isolation barriers
+11. generate and review Gerber/drill/BOM/position outputs before ordering
+
+Do not perform a text-only replacement of the compact symbol in the legacy `.sch` and assume the PCB netlist is valid. The converted schematic must be opened in KiCad and verified by ERC before it becomes the new electrical source for PCB update.
 
 ## Source of truth
 
