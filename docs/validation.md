@@ -18,25 +18,30 @@ Begin with passive receive/sniffing before enabling transmission.
 
 ## VE.Bus optional power and control
 
-Measure before populating optional Rev-A footprints:
+Measure before selecting/populating the optional VE.Bus power module and STB/PD interfaces:
 
 - RJ45 V+ voltage over all MultiPlus operating states
 - available current and source impedance
+- isolated DC/DC input range required by the measured V+
 - STB electrical levels and required drive behaviour
 - PD electrical levels and required sense/drive behaviour
 
-The Rev-A PCB already reserves protected power and isolated STB/PD interface options; these measurements determine population, not PCB topology.
+The Rev-A PCB reserves an isolated VE.Bus power path and isolated STB/PD interface options; these measurements determine population, not topology.
 
 ## Power / thermal validation
 
 On the assembled carrier validate:
 
-- correct operation from 5 V through 30 V input
+- correct external-branch operation over the specified 5-30 V input range
 - TPS2660 current limiting and reverse-polarity behaviour
-- LMR38020 4.75-V regulation and startup
-- USB/carrier simultaneous connection with no back-feed
+- LMR38020 regulation and startup
+- `D_EXT` voltage drop and reverse blocking
+- isolated VE.Bus DC/DC regulation, isolation and startup after its input range has been selected
+- `D_VE` voltage drop and reverse blocking
+- stable `SYS_5V` with external and VE.Bus sources present individually and simultaneously
+- USB/carrier simultaneous connection with no back-feed into either source branch
 - BAT/SOL coexistence with the selected Heltec V4.2 board
-- regulator and eFuse temperatures at worst-case load and ambient
+- regulator, OR-element and eFuse temperatures at worst-case load and ambient
 - conducted/radiated switching noise near LoRa and GNSS
 
 ## Modbus RS485 bring-up
@@ -130,10 +135,10 @@ Before calling Rev A production-ready validate:
 - ESD at field and RJ45 connectors
 - EFT/burst on field supply and RS485
 - surge strategy appropriate to the deployment environment
-- conducted emissions of the buck converter and both isolated transceivers
+- conducted emissions of the external buck, isolated VE.Bus power converter and both isolated transceivers
 - radiated emissions / immunity interaction with LoRa, Wi-Fi and GNSS
 - thermal soak and cold-start behaviour
 
 ## Completion rule
 
-A resolved item moves into the relevant permanent specification or hardware document and is removed from this list. Hardware topology already frozen in `docs/hardware-rev-a.md` is not reopened by ordinary bring-up measurements unless the validation result demonstrates a design defect.
+A resolved item moves into the relevant permanent specification or hardware document and is removed from this list. Hardware topology frozen in `docs/hardware-rev-a.md` is not reopened by ordinary bring-up measurements unless the validation result demonstrates a design defect.
