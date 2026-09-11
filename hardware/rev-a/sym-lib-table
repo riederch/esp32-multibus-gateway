@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "multibus-rev-a")(type "Legacy")(uri "${KIPRJMOD}/multibus-rev-a.lib")(options "")(descr "MultiBus Rev-A custom symbols"))
+)

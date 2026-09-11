@@ -1,0 +1,446 @@
+EESchema Schematic File Version 4
+LIBS:multibus-rev-a
+LIBS:power
+LIBS:device
+LIBS:Connector_Generic
+EELAYER 29 0
+EELAYER END
+$Descr A3 16535 11693
+Sheet 1 1
+Title "MultiBus Gateway Rev A"
+Date "2026-09-11"
+Rev "A"
+Comp "SC3 / Christoph Rieder"
+Comment1 "Heltec HTIT-WB32LAF V4.2 carrier"
+Comment2 "Dual-source power, isolated Modbus and VE.Bus"
+Comment3 "Schematic capture baseline - run ERC before PCB release"
+Comment4 "VE.Bus isolated DC/DC part selected after VEBUS_VPLUS measurement"
+$EndDescr
+Text Notes 650 650 0 120 ~ 24
+FIELD POWER 5-30 V
+$Comp
+L Connector_Generic:Conn_01x04 J1
+U 1 1 10000001
+P 1100 1450
+F 0 "J1" H 1018 1767 50  0000 C CNN
+F 1 "FIELD V+ V- A B" H 1018 1676 50 0000 C CNN
+	1    1100 1450
+	-1 0 0 -1
+$EndComp
+Text Label 1500 1350 0 50 ~ 0
+VIN_FIELD
+Text Label 1500 1450 0 50 ~ 0
+CORE_GND
+Text Label 1500 1550 0 50 ~ 0
+MODBUS_A
+Text Label 1500 1650 0 50 ~ 0
+MODBUS_B
+Wire Wire Line
+	1300 1350 2100 1350
+Wire Wire Line
+	1300 1450 2100 1450
+Wire Wire Line
+	1300 1550 2100 1550
+Wire Wire Line
+	1300 1650 2100 1650
+$Comp
+L Device:Fuse F1
+U 1 1 10000002
+P 2450 1350
+F 0 "F1" V 2253 1350 50 0000 C CNN
+F 1 "PTC/FUSE" V 2344 1350 50 0000 C CNN
+	1    2450 1350
+	0 1 1 0
+$EndComp
+Wire Wire Line
+	2100 1350 2300 1350
+Text Label 2700 1350 0 50 ~ 0
+VIN_FUSED
+Wire Wire Line
+	2600 1350 3100 1350
+$Comp
+L Device:D_TVS D1
+U 1 1 10000003
+P 2950 1700
+F 0 "D1" V 2904 1779 50 0000 L CNN
+F 1 "FIELD_TVS" V 2995 1779 50 0000 L CNN
+	1    2950 1700
+	0 1 1 0
+$EndComp
+Wire Wire Line
+	2950 1550 2950 1350
+Wire Wire Line
+	2950 1850 2950 2050
+Text Label 2950 2050 3 50 ~ 0
+CORE_GND
+$Comp
+L TPS2660 U1
+U 1 1 10000004
+P 4300 1450
+F 0 "U1" H 4300 2100 50 0000 C CNN
+F 1 "TPS2660" H 4300 2000 50 0000 C CNN
+	1    4300 1450
+	1 0 0 -1
+$EndComp
+Wire Wire Line
+	3100 1350 3450 1350
+Wire Wire Line
+	3450 1350 3450 1150
+Wire Wire Line
+	3450 1150 3650 1150
+Wire Wire Line
+	3450 1350 3650 1250
+Connection ~ 3450 1350
+Text Label 5100 1150 0 50 ~ 0
+VPROTECTED
+Wire Wire Line
+	4950 1150 5600 1150
+Wire Wire Line
+	4950 1250 5600 1250
+Text Label 5600 1250 0 50 ~ 0
+VPROTECTED
+Text Label 4300 2200 3 50 ~ 0
+CORE_GND
+Wire Wire Line
+	4300 2000 4300 2200
+Wire Wire Line
+	4450 2000 4450 2200
+Text Label 4450 2200 3 50 ~ 0
+CORE_GND
+Text Notes 3550 2400 0 50 ~ 0
+UVLO/OVP/ILIM/dVdT values to be calculated for selected TPS2660 suffix before PCB release.
+$Comp
+L LMR38020 U2
+U 1 1 10000005
+P 6800 1450
+F 0 "U2" H 6800 2000 50 0000 C CNN
+F 1 "LMR38020" H 6800 1900 50 0000 C CNN
+	1    6800 1450
+	1 0 0 -1
+$EndComp
+Text Label 5950 1100 2 50 ~ 0
+VPROTECTED
+Wire Wire Line
+	5950 1100 6000 1100
+Wire Wire Line
+	6000 1100 6000 1250
+Wire Wire Line
+	6000 1250 6000 1350
+Text Label 6800 2100 3 50 ~ 0
+CORE_GND
+Wire Wire Line
+	6800 1900 6800 2100
+$Comp
+L Device:L L1
+U 1 1 10000006
+P 8050 1100
+F 0 "L1" V 8240 1100 50 0000 C CNN
+F 1 "15uH >=3A" V 8149 1100 50 0000 C CNN
+	1    8050 1100
+	0 -1 -1 0
+$EndComp
+Wire Wire Line
+	7600 1100 7900 1100
+Text Label 8450 1100 0 50 ~ 0
+EXT_5V
+Wire Wire Line
+	8200 1100 8800 1100
+$Comp
+L Device:D_Schottky D_EXT1
+U 1 1 10000007
+P 9250 1100
+F 0 "D_EXT1" H 9250 883 50 0000 C CNN
+F 1 "SOURCE OR" H 9250 974 50 0000 C CNN
+	1    9250 1100
+	-1 0 0 1
+$EndComp
+Wire Wire Line
+	8800 1100 9100 1100
+Text Label 9850 1100 0 50 ~ 0
+SYS_5V
+Wire Wire Line
+	9400 1100 10300 1100
+Text Notes 6400 2350 0 50 ~ 0
+Set EXT_5V so SYS_5V remains valid after D_EXT drop. USB should have natural priority.
+Text Notes 650 3000 0 120 ~ 24
+VE.BUS POWER - GALVANICALLY ISOLATED
+$Comp
+L Connector_Generic:Conn_01x08 J2
+U 1 1 10000008
+P 1100 3900
+F 0 "J2" H 1018 4417 50 0000 C CNN
+F 1 "VE.Bus RJ45" H 1018 4326 50 0000 C CNN
+	1    1100 3900
+	-1 0 0 -1
+$EndComp
+Text Label 1550 3700 0 50 ~ 0
+VEBUS_VPLUS
+Text Label 1550 3800 0 50 ~ 0
+VEBUS_GND
+Text Label 1550 3900 0 50 ~ 0
+VEBUS_A
+Text Label 1550 4000 0 50 ~ 0
+VEBUS_B
+Text Label 1550 4100 0 50 ~ 0
+VEBUS_STB
+Text Label 1550 4200 0 50 ~ 0
+VEBUS_PD
+Wire Wire Line
+	1300 3700 2100 3700
+Wire Wire Line
+	1300 3800 2100 3800
+Wire Wire Line
+	1300 3900 2100 3900
+Wire Wire Line
+	1300 4000 2100 4000
+Wire Wire Line
+	1300 4100 2100 4100
+Wire Wire Line
+	1300 4200 2100 4200
+Text Notes 800 4500 0 50 ~ 0
+RJ45 pins: 1 NC, 2 V+, 3 GND, 4 A, 5 B, 6 STB, 7 PD, 8 NC
+$Comp
+L Device:Fuse F2
+U 1 1 10000009
+P 2650 3700
+F 0 "F2" V 2453 3700 50 0000 C CNN
+F 1 "VE FUSE" V 2544 3700 50 0000 C CNN
+	1    2650 3700
+	0 1 1 0
+$EndComp
+Wire Wire Line
+	2100 3700 2500 3700
+$Comp
+L ISO_DC_DC_5V U7
+U 1 1 1000000A
+P 4300 3800
+F 0 "U7" H 4300 4250 50 0000 C CNN
+F 1 "ISOLATED DC/DC  -> 5V" H 4300 4150 50 0000 C CNN
+	1    4300 3800
+	1 0 0 -1
+$EndComp
+Wire Wire Line
+	2800 3700 3550 3700
+Text Label 3350 3700 2 50 ~ 0
+VE_PWR_IN
+Wire Wire Line
+	2100 3800 3550 3800
+Text Label 3300 3800 2 50 ~ 0
+VEBUS_GND
+Text Label 5300 3700 0 50 ~ 0
+VE_ISO_5V
+Wire Wire Line
+	5050 3700 5850 3700
+Wire Wire Line
+	5050 3800 5850 3800
+Text Label 5850 3800 0 50 ~ 0
+CORE_GND
+$Comp
+L Device:D_Schottky D_VE1
+U 1 1 1000000B
+P 6400 3700
+F 0 "D_VE1" H 6400 3483 50 0000 C CNN
+F 1 "SOURCE OR" H 6400 3574 50 0000 C CNN
+	1    6400 3700
+	-1 0 0 1
+$EndComp
+Wire Wire Line
+	5850 3700 6250 3700
+Text Label 7000 3700 0 50 ~ 0
+SYS_5V
+Wire Wire Line
+	6550 3700 7350 3700
+Text Notes 3350 4450 0 50 ~ 0
+U7 input range is selected after measuring VEBUS_VPLUS on the target MultiPlus.
+Text Notes 650 5100 0 120 ~ 24
+CORE / HELTEC CARRIER
+$Comp
+L HELTEC_V4_2_CARRIER U10
+U 1 1 1000000C
+P 8250 5900
+F 0 "U10" H 8250 6800 50 0000 C CNN
+F 1 "HELTEC HTIT-WB32LAF V4.2" H 8250 6700 50 0000 C CNN
+	1    8250 5900
+	1 0 0 -1
+$EndComp
+Text Label 6900 5300 2 50 ~ 0
+SYS_5V
+Wire Wire Line
+	6900 5300 7350 5300
+Text Label 6900 5450 2 50 ~ 0
+3V3
+Wire Wire Line
+	6900 5450 7350 5450
+Text Label 6900 6500 2 50 ~ 0
+CORE_GND
+Wire Wire Line
+	6900 6500 7350 6500
+Text Label 9600 5300 0 50 ~ 0
+MODBUS_RX
+Text Label 9600 5450 0 50 ~ 0
+MODBUS_TX
+Text Label 9600 5600 0 50 ~ 0
+MODBUS_DIR
+Text Label 9600 5800 0 50 ~ 0
+VEBUS_RX
+Text Label 9600 5950 0 50 ~ 0
+VEBUS_TX
+Text Label 9600 6100 0 50 ~ 0
+VEBUS_DIR
+Text Label 9600 6300 0 50 ~ 0
+VEBUS_STB_CORE
+Text Label 9600 6450 0 50 ~ 0
+VEBUS_PD_CORE
+Wire Wire Line
+	9150 5300 10050 5300
+Wire Wire Line
+	9150 5450 10050 5450
+Wire Wire Line
+	9150 5600 10050 5600
+Wire Wire Line
+	9150 5800 10050 5800
+Wire Wire Line
+	9150 5950 10050 5950
+Wire Wire Line
+	9150 6100 10050 6100
+Wire Wire Line
+	9150 6300 10050 6300
+Wire Wire Line
+	9150 6450 10050 6450
+Text Notes 650 7350 0 120 ~ 24
+MODBUS ISOLATED RS485
+$Comp
+L ISOW1412 U3
+U 1 1 1000000D
+P 4800 8350
+F 0 "U3" H 4800 9250 50 0000 C CNN
+F 1 "ISOW1412 MODBUS" H 4800 9150 50 0000 C CNN
+	1    4800 8350
+	1 0 0 -1
+$EndComp
+Text Label 3350 7750 2 50 ~ 0
+3V3
+Text Label 3350 7900 2 50 ~ 0
+MODBUS_TX
+Text Label 3350 8050 2 50 ~ 0
+MODBUS_DIR
+Text Label 3350 8200 2 50 ~ 0
+MODBUS_RX
+Text Label 3350 8800 2 50 ~ 0
+3V3
+Text Label 3350 8950 2 50 ~ 0
+CORE_GND
+Wire Wire Line
+	3350 7750 3750 7750
+Wire Wire Line
+	3350 7900 3750 7900
+Wire Wire Line
+	3350 8050 3750 8050
+Wire Wire Line
+	3350 8200 3750 8200
+Wire Wire Line
+	3350 8800 3750 8800
+Wire Wire Line
+	3350 8950 3750 8950
+Wire Wire Line
+	3750 8050 3650 8050
+Wire Wire Line
+	3650 8050 3650 8350
+Wire Wire Line
+	3650 8350 3750 8350
+Text Label 6100 7750 0 50 ~ 0
+MODBUS_A
+Text Label 6100 7900 0 50 ~ 0
+MODBUS_B
+Wire Wire Line
+	5850 7750 6500 7750
+Wire Wire Line
+	5850 7900 6500 7900
+Wire Wire Line
+	5850 8050 6000 8050
+Wire Wire Line
+	6000 8050 6000 7900
+Connection ~ 6000 7900
+Wire Wire Line
+	5850 8200 5950 8200
+Wire Wire Line
+	5950 8200 5950 7750
+Connection ~ 5950 7750
+Text Label 6100 8950 0 50 ~ 0
+MB_VISO
+Text Label 6100 8500 0 50 ~ 0
+MB_GISO
+Text Notes 6550 8050 0 50 ~ 0
+SM712 + 120R selectable + 680R bias selectable are placed at J1 in PCB capture.
+Text Notes 8600 7350 0 120 ~ 24
+VE.BUS ISOLATED RS485
+$Comp
+L ISOW1412 U5
+U 1 1 1000000E
+P 11900 8350
+F 0 "U5" H 11900 9250 50 0000 C CNN
+F 1 "ISOW1412 VE.BUS" H 11900 9150 50 0000 C CNN
+	1    11900 8350
+	1 0 0 -1
+$EndComp
+Text Label 10450 7750 2 50 ~ 0
+3V3
+Text Label 10450 7900 2 50 ~ 0
+VEBUS_TX
+Text Label 10450 8050 2 50 ~ 0
+VEBUS_DIR
+Text Label 10450 8200 2 50 ~ 0
+VEBUS_RX
+Text Label 10450 8800 2 50 ~ 0
+3V3
+Text Label 10450 8950 2 50 ~ 0
+CORE_GND
+Wire Wire Line
+	10450 7750 10850 7750
+Wire Wire Line
+	10450 7900 10850 7900
+Wire Wire Line
+	10450 8050 10850 8050
+Wire Wire Line
+	10450 8200 10850 8200
+Wire Wire Line
+	10450 8800 10850 8800
+Wire Wire Line
+	10450 8950 10850 8950
+Wire Wire Line
+	10850 8050 10750 8050
+Wire Wire Line
+	10750 8050 10750 8350
+Wire Wire Line
+	10750 8350 10850 8350
+Text Label 13200 7750 0 50 ~ 0
+VEBUS_A
+Text Label 13200 7900 0 50 ~ 0
+VEBUS_B
+Wire Wire Line
+	12950 7750 13600 7750
+Wire Wire Line
+	12950 7900 13600 7900
+Wire Wire Line
+	12950 8050 13100 8050
+Wire Wire Line
+	13100 8050 13100 7900
+Connection ~ 13100 7900
+Wire Wire Line
+	12950 8200 13050 8200
+Wire Wire Line
+	13050 8200 13050 7750
+Connection ~ 13050 7750
+Text Label 13200 8950 0 50 ~ 0
+VE_VISO
+Text Label 13200 8500 0 50 ~ 0
+VE_GISO
+Text Notes 13150 8350 0 50 ~ 0
+SM712 + optional 120R/bias footprints at RJ45. Default VE.Bus termination/bias DNI.
+Text Notes 650 10300 0 80 ~ 12
+DNI interfaces: isolated STB output from GPIO43 to VEBUS_STB; isolated PD input/sense from VEBUS_PD to GPIO44.
+Text Notes 650 10500 0 80 ~ 12
+Required testpoints: VIN_FIELD VPROTECTED EXT_5V SYS_5V CORE_GND VEBUS_VPLUS VEBUS_GND VE_ISO_5V MB_A MB_B MB_VISO MB_GISO VE_A VE_B VE_VISO VE_GISO and UART/DIR nets.
+Text Notes 650 10700 0 80 ~ 12
+ERC/footprint verification required in KiCad before PCB release. Isolation barriers must have no copper crossing.
+$EndSCHEMATC
