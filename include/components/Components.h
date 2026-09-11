@@ -10,6 +10,7 @@
 #include "core/LoRaWanIdentity.h"
 #include "core/Transport.h"
 #include "modbus/ModbusChannel.h"
+#include "modbus/ModbusRtuMaster.h"
 
 namespace multibus {
 
@@ -105,7 +106,15 @@ private:
 
 class ModbusComponent final : public Component, public DataSource {
 public:
-    void setMode(ModbusMode mode) { mode_ = mode; active_ = false; }
+    void setMode(ModbusMode mode) {
+        mode_ = mode;
+        active_ = false;
+    }
+
+    void setRtuSerialConfig(const modbus::RtuSerialConfig& config) {
+        serialConfig_ = config;
+    }
+
     const char* name() const override { return "modbus"; }
     const char* sourceId() const override { return "modbus"; }
 
@@ -114,10 +123,12 @@ public:
             case ModbusMode::Master:
                 capabilities.add("source.modbus");
                 capabilities.add("modbus.master");
+                capabilities.add("modbus.rtu");
                 capabilities.add("modbus.read");
                 capabilities.add("modbus.write");
                 capabilities.add("modbus.raw");
                 capabilities.add("modbus.compatibility-channels");
+                if (!rtuMaster_.begin(serialConfig_)) return false;
                 active_ = true;
                 return true;
             case ModbusMode::Slave:
@@ -172,43 +183,146 @@ public:
         return nullptr;
     }
 
-    static String pointIdForSlot(uint8_t slot) {
-        char value[16];
-        snprintf(value, sizeof(value), "compat/%u", static_cast<unsigned>(slot + 1));
+    static String pointIdForSlot(uint8_t slot, uint8_t registerIndex = 0) {
+        char value[20];
+        if (registerIndex == 0) {
+            snprintf(value, sizeof(value), "compat/%u", static_cast<unsigned>(slot + 1));
+        } else {
+            snprintf(value, sizeof(value), "compat/%u/%u",
+                     static_cast<unsigned>(slot + 1),
+                     static_cast<unsigned>(registerIndex + 1));
+        }
         return String(value);
     }
 
     void loop() override {}
     bool active() const { return active_; }
-    bool online() const override { return false; }
-    size_t pointCount() const override { return channels_.size(); }
+    bool online() const override {
+        return mode_ == ModbusMode::Master && active_ && rtuMaster_.online();
+    }
+
+    size_t pointCount() const override {
+        size_t count = 0;
+        for (const auto& channel : channels_) count += channel.quantity;
+        return count;
+    }
 
     bool describePoint(size_t index, DataPointDescriptor& descriptor) const override {
-        if (index >= channels_.size()) return false;
-        const auto& channel = channels_[index];
-        descriptor.id = pointIdForSlot(channel.slot);
-        descriptor.unit = "";
-        descriptor.readable = true;
-        descriptor.writable = false;
+        size_t currentIndex = 0;
+        for (const auto& channel : channels_) {
+            for (uint8_t registerIndex = 0; registerIndex < channel.quantity; ++registerIndex) {
+                if (currentIndex++ != index) continue;
 
-        if (modbus::isBooleanType(channel.dataType)) {
-            descriptor.type = DataType::Boolean;
-        } else if (modbus::isFloatingPointType(channel.dataType)) {
-            descriptor.type = DataType::Float64;
-        } else if (modbus::uplinkSigned(channel)) {
-            descriptor.type = DataType::Int64;
-        } else {
-            descriptor.type = DataType::UInt64;
+                descriptor.id = pointIdForSlot(channel.slot, registerIndex);
+                descriptor.unit = "";
+                descriptor.readable = mode_ == ModbusMode::Master;
+                descriptor.writable = false;
+
+                if (modbus::isBooleanType(channel.dataType)) {
+                    descriptor.type = DataType::Boolean;
+                } else if (modbus::isFloatingPointType(channel.dataType)) {
+                    descriptor.type = DataType::Float64;
+                } else if (modbus::uplinkSigned(channel)) {
+                    descriptor.type = DataType::Int64;
+                } else {
+                    descriptor.type = DataType::UInt64;
+                }
+                return true;
+            }
         }
+        return false;
+    }
+
+    bool readPoint(const String& pointId, DataValue& value) override {
+        value = DataValue{};
+        if (mode_ != ModbusMode::Master || !active_) return false;
+
+        uint8_t slot = 0;
+        uint8_t registerIndex = 0;
+        if (!parsePointId(pointId, slot, registerIndex)) return false;
+
+        const modbus::ChannelConfig* channel = channelForSlot(slot);
+        if (channel == nullptr || registerIndex >= channel->quantity) return false;
+
+        modbus::DecodedScalar values[2];
+        uint8_t valueCount = 0;
+        if (!rtuMaster_.read(*channel, values, valueCount) || registerIndex >= valueCount) return false;
+
+        value.valid = true;
+        const auto& scalar = values[registerIndex];
+        switch (scalar.kind) {
+            case modbus::ScalarKind::Boolean:
+                value.type = DataType::Boolean;
+                value.booleanValue = scalar.booleanValue;
+                return true;
+            case modbus::ScalarKind::SignedInteger:
+                value.type = DataType::Int64;
+                value.intValue = scalar.signedValue;
+                return true;
+            case modbus::ScalarKind::UnsignedInteger:
+                value.type = DataType::UInt64;
+                value.uintValue = scalar.unsignedValue;
+                return true;
+            case modbus::ScalarKind::FloatingPoint:
+                value.type = DataType::Float64;
+                value.floatValue = scalar.floatingValue;
+                return true;
+        }
+        value.valid = false;
+        return false;
+    }
+
+    bool writePoint(const String&, const DataValue&) override { return false; }
+
+    const modbus::ModbusRtuMaster& rtuMaster() const { return rtuMaster_; }
+
+private:
+    static bool parsePositiveNumber(const String& value, uint16_t& number) {
+        if (value.isEmpty()) return false;
+        uint32_t parsed = 0;
+        for (size_t i = 0; i < value.length(); ++i) {
+            const char c = value.charAt(i);
+            if (c < '0' || c > '9') return false;
+            parsed = parsed * 10U + static_cast<uint32_t>(c - '0');
+            if (parsed > 65535U) return false;
+        }
+        if (parsed == 0) return false;
+        number = static_cast<uint16_t>(parsed);
         return true;
     }
 
-    bool readPoint(const String&, DataValue&) override { return false; }
-    bool writePoint(const String&, const DataValue&) override { return false; }
+    static bool parsePointId(const String& pointId, uint8_t& slot, uint8_t& registerIndex) {
+        static const char* prefix = "compat/";
+        if (!pointId.startsWith(prefix)) return false;
 
-private:
+        const String suffix = pointId.substring(strlen(prefix));
+        const int slash = suffix.indexOf('/');
+        const String channelPart = slash < 0 ? suffix : suffix.substring(0, slash);
+
+        uint16_t channelNumber = 0;
+        if (!parsePositiveNumber(channelPart, channelNumber) ||
+            channelNumber > modbus::kCompatibilitySlotCount) {
+            return false;
+        }
+
+        registerIndex = 0;
+        if (slash >= 0) {
+            if (suffix.indexOf('/', slash + 1) >= 0) return false;
+            uint16_t registerNumber = 0;
+            if (!parsePositiveNumber(suffix.substring(slash + 1), registerNumber) || registerNumber > 2) {
+                return false;
+            }
+            registerIndex = static_cast<uint8_t>(registerNumber - 1U);
+        }
+
+        slot = static_cast<uint8_t>(channelNumber - 1U);
+        return true;
+    }
+
     ModbusMode mode_ = ModbusMode::Disabled;
     bool active_ = false;
+    modbus::RtuSerialConfig serialConfig_;
+    modbus::ModbusRtuMaster rtuMaster_;
     std::vector<modbus::ChannelConfig> channels_;
 };
 
