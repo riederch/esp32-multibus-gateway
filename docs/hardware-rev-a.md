@@ -51,30 +51,39 @@ Preferred family: Phoenix Contact MSTBA 2,5/4-G-5,08 or footprint-compatible equ
 Net sequence:
 
 ```text
-V+ -> fuse/PTC option -> TVS -> TPS2660 -> VPROTECTED
-V- ----------------------------------------> CORE_GND
+V+ -> fuse/PTC option -> TVS -> TPS26600 -> VPROTECTED
+V- ------------------------------------------> CORE_GND
 ```
 
-Use TPS2660 as the main electronic protection element.
+U1 is `TPS26600PWP`.
 
-Manufacturer verification notes for schematic capture:
+Manufacturer-verified package facts relevant to schematic capture:
 
-- TPS2660 operating range is 4.2-60 V.
-- HTSSOP/PWP package has duplicated `IN` pins 1/2 and duplicated `OUT` pins 15/16.
-- `UVLO`, `OVP`, `ILIM`, `dVdT`, `MODE`, `SHDN`, `RTN`, `GND`, `IMON` and `FLT` must be represented explicitly in the symbol.
-- PowerPad belongs to the `RTN` plane and must not be the sole RTN connection.
+- operating range is 4.2-60 V
+- HTSSOP/PWP package has duplicated `IN` pins 1/2 and duplicated `OUT` pins 15/16
+- `UVLO`, `OVP`, `ILIM`, `dVdT`, `MODE`, `SHDN`, `RTN`, `GND`, `IMON` and `FLT` are represented explicitly
+- PowerPAD belongs to the `RTN` plane and must not be the sole RTN connection
 
-Default design intent:
+Rev-A captured baseline:
 
 ```text
-current limit = approximately 1 A
-UVLO          = external divider/configuration allowing operation from 5 V
-OVP           = threshold above 30 V and below downstream absolute maximum
+specified input range   5-30 V DC
+current-limit target    approximately 1 A
+R_ILIM                  11.8 kOhm, 1 %
+C_dVdT                  22 nF
+UVLO                     tied to IN
+OVP                      tied to RTN
+MODE                     tied to RTN
+SHDN                     tied to IN / enabled from input rail
 ```
 
-The exact `RILIM`, UVLO/OVP divider and dVdT components are schematic-calculation items and must be checked against the chosen TPS2660 suffix before PCB release. Do not encode the earlier provisional `11.8 kOhm` value as an unchecked production value.
+`R_ILIM = 11.8 kOhm` is the TI 1-A design value and is therefore no longer treated as a provisional placeholder.
 
-Do not use the device's internal 15-V UVLO mode.
+`UVLO = IN` intentionally disables the optional external UVLO function so the design can operate from the specified 5-V minimum rather than enabling the device's 15-V factory UVLO mode. `OVP = RTN` enables the TPS26600 factory 33-V overvoltage cutoff. This is compatible with the specified 5-30-V field-input range; the external TVS and fuse/eFuse coordination still require surge validation before release.
+
+`C_dVdT = 22 nF` is the Rev-A soft-start baseline. It may be tuned during bring-up if measured inrush/startup behaviour requires it; such a value change does not alter the frozen topology.
+
+Do not hard-connect `U1_RTN` to `CORE_GND`. The distinction is required by the reverse-polarity architecture.
 
 Provide footprints for:
 
@@ -87,7 +96,7 @@ Provide footprints for:
 
 ### 4.2 External buck converter
 
-U2: TI LMR38020.
+U2: TI `LMR38020SDDAR`.
 
 Manufacturer-verified package/pin assignment:
 
@@ -112,19 +121,28 @@ fSW   = 400 kHz
 IOUT  = design for up to 2 A capability
 ```
 
-The TI 5-V / 400-kHz reference point uses:
+TI's 5-V / 400-kHz reference point uses:
 
 ```text
-RFBT  = 100 kOhm, 1 %
-RFBB  = 24.9 kOhm, 1 %
-L1    = 15 uH
-COUT  = 3 x 22 uF nominal
-CBOOT = 100 nF
+R_FBT  = 100 kOhm, 1 %
+R_FBB  = 24.9 kOhm, 1 %
+R_RT   = 64.9 kOhm, 1 %
+L1     = 15 uH
+COUT   = 3 x 22 uF nominal
+C_BOOT = 100 nF
 ```
 
-The final feedback divider may be adjusted from the 5.00-V reference if required to compensate the selected `D_EXT` forward drop. Do not retain the previous hard-coded 4.75-V pre-OR assumption.
+The Rev-A source-OR implementation intentionally raises the pre-diode output slightly above the 5.0-V TI reference point:
 
-The switching-frequency programming resistor on `RT/SYNC` must be selected from the current TI design equation/table during schematic capture; the earlier provisional `64.9 kOhm` value is not frozen until checked against the exact selected variant and desired mode.
+```text
+R_FBT  = 100 kOhm, 1 %
+R_FBB  = 23.7 kOhm, 1 %
+EXT_5V = approximately 5.2 V nominal
+```
+
+This compensates part of the `D_EXT` Schottky drop. Final `SYS_5V` minimum/maximum under load remains a bring-up measurement and `R_FBB` may be adjusted before fabrication freeze if the selected diode requires it.
+
+`R_RT = 64.9 kOhm` is the TI table value for 400-kHz operation and is therefore a verified Rev-A baseline rather than an unchecked provisional value.
 
 Follow the LMR38020 layout example for the VIN-SW-inductor-output current loop.
 
@@ -134,7 +152,7 @@ The external and VE.Bus branches are ORed only after conversion to Core-side low
 
 ```text
 EXT_5V    -> D_EXT --+
-                     +--> SYS_5V --> Heltec 5V
+                     +--> SYS_5V --> JP_USB_SAFE --> HELTEC_5V
 VE_ISO_5V -> D_VE ---+
 ```
 
@@ -144,13 +162,27 @@ The previously considered LM66100/LM66200 stage is not part of the Rev-A power a
 
 ### 4.4 USB coexistence
 
-USB-C remains native on the Heltec board. The carrier connects only through `SYS_5V` and its one-way source ORing.
+USB-C remains native on the Heltec board. The carrier feeds the module through the dedicated physical disconnect `JP_USB_SAFE`.
+
+Heltec V4.2 must not be powered simultaneously from USB-C and the external 5-V header input.
+
+Required operating rule:
+
+```text
+Normal field operation:  JP_USB_SAFE CLOSED
+USB service/programming: JP_USB_SAFE OPEN before connecting USB-C
+```
+
+The carrier must therefore **not** rely on voltage priority or diode-drop assumptions to make USB coexist safely with `SYS_5V`.
 
 Required behaviour:
 
-- USB must not back-feed `EXT_5V` or the isolated VE.Bus converter output.
-- Neither carrier source may back-feed the other source.
-- Set the carrier-side voltage hierarchy so USB normally wins when attached for service/programming.
+- with `JP_USB_SAFE` closed and USB absent, `SYS_5V` powers the Heltec normally
+- with `JP_USB_SAFE` open, `SYS_5V` is physically disconnected from `HELTEC_5V`
+- USB may then power the Heltec independently while external and/or VE.Bus carrier sources remain present on the carrier
+- no carrier source may back-feed another carrier source through the low-voltage ORing network
+
+Silkscreen: `OPEN FOR USB`.
 
 ## 5. Modbus isolated RS485
 
@@ -218,8 +250,8 @@ Place directly at J1:
 Default assembly for a gateway/master prototype:
 
 ```text
-termination  = populated resistor, jumper open
-bias resistors = populated, jumpers open
+termination     = populated resistor, jumper open
+bias resistors  = populated, jumpers open
 ```
 
 This makes the PCB flexible; enable termination/bias only when required by installation topology.
@@ -316,6 +348,8 @@ The first bench prototype may use a commercial isolated 9-18 V to 5 V or 18-36 V
 
 ## 9. Heltec carrier connections
 
+The PCB-netlisted design must use the full `HELTEC_V4_2_PHYSICAL` symbol and the matching `Heltec_WiFi_LoRa_32_V4_2` 36-pad footprint. The compact logical carrier symbol may remain in documentation but must not be the only symbol driving the PCB netlist.
+
 Mandatory carrier signals:
 
 ```text
@@ -331,6 +365,27 @@ GPIO44
 GPIO47
 GPIO48
 ```
+
+Verified Rev-A physical header mapping:
+
+| Footprint pad | Header pin | Heltec signal | Rev-A use |
+|---:|---|---|---|
+| 1 | J2.1 | GND | CORE_GND |
+| 2 | J2.2 | 5V | HELTEC_5V |
+| 5 | J2.5 | GPIO44 | VEBUS_PD_CTRL |
+| 6 | J2.6 | GPIO43 | VEBUS_STB_CTRL |
+| 8 | J2.8 | GPIO0 / PRG | USER/PRG button, not a carrier bus signal |
+| 13 | J2.13 | GPIO47 | VEBUS_RX |
+| 14 | J2.14 | GPIO48 | VEBUS_TX |
+| 19 | J3.1 | GND | CORE_GND |
+| 20 | J3.2 | 3V3 | 3V3 |
+| 21 | J3.3 | 3V3 | 3V3 |
+| 31 | J3.13 | GPIO2 | MODBUS_RX |
+| 33 | J3.15 | GPIO4 | MODBUS_TX |
+| 34 | J3.16 | GPIO5 | MODBUS_DIR |
+| 35 | J3.17 | GPIO6 | VEBUS_DIR |
+
+Important correction: Heltec V4.2 header `J2.8` is `GPIO0 / PRG`, **not GPIO10**. GPIO10 is used by the onboard LoRa SPI path and must not be substituted for the USER/PRG input.
 
 The remaining Heltec onboard resources stay connected on the module itself.
 
@@ -350,11 +405,11 @@ Do not use GPIO3, GPIO45 or GPIO46 for Rev-A carrier functions because they are 
 
 | Ref | Function | Preferred part / class | Population |
 |---|---|---|---|
-| U1 | input eFuse | TPS2660 PWP-class selected suffix | required |
-| U2 | external 5-30 V buck | LMR38020 DDA | required |
-| U3 | Modbus isolated RS485 + isolated power | ISOW1412 DFM | required |
+| U1 | input eFuse | TPS26600PWP | required |
+| U2 | external 5-30 V buck | LMR38020SDDAR | required |
+| U3 | Modbus isolated RS485 + isolated power | ISOW1412DFM | required |
 | U4 | Modbus TVS | SM712 or equivalent | required |
-| U5 | VE.Bus isolated RS485 + isolated power | ISOW1412 DFM | required |
+| U5 | VE.Bus isolated RS485 + isolated power | ISOW1412DFM | required |
 | U6 | VE.Bus TVS | SM712 or equivalent | required |
 | U7 | VE.Bus isolated DC/DC | input-range-specific isolated 5-V converter/module | selected after VEBUS_VPLUS measurement |
 | D_EXT | external source OR | low-loss Schottky/reverse-blocking element | required |
@@ -377,15 +432,15 @@ Passives use X7R ceramics where practical and voltage derating appropriate for t
 2. Sweep J1 input from 5 V to 30 V and verify `VPROTECTED` and `EXT_5V`.
 3. Verify reverse-polarity protection and current limiting with a current-limited bench supply.
 4. Verify `D_EXT` drop and `SYS_5V` under load.
-5. Attach Heltec; verify carrier power and USB power independently.
-6. Connect USB while carrier supply is active and verify no reverse current into the external branch.
+5. With USB absent and `JP_USB_SAFE` closed, attach the Heltec and verify normal carrier-powered operation.
+6. For USB testing, open `JP_USB_SAFE` **before** connecting USB-C. With carrier sources still present, verify that `SYS_5V` is isolated from `HELTEC_5V`, the Heltec is powered only by USB and no reverse current enters either carrier branch.
 7. Populate/enable Modbus interface; check DE/RE default state and loopback with an isolated USB-RS485 adapter.
 8. Verify Modbus at 9.6, 19.2, 115.2 and 256 kbit/s electrical stress test.
 9. Populate VE.Bus data interface but begin receive-only on a real MultiPlus.
 10. Measure A/B polarity, idle bias, termination and frame timing.
 11. Measure `VEBUS_VPLUS`, available current and source impedance before selecting U7.
 12. Populate U7/D_VE and verify VE.Bus-powered operation while preserving isolation.
-13. Verify simultaneous external + VE.Bus + USB source operation with no back-feed.
+13. Verify simultaneous external + VE.Bus carrier sources with stable `SYS_5V` and no back-feed; USB remains disconnected unless `JP_USB_SAFE` is open as in step 6.
 14. Measure STB/PD behaviour before populating those optional paths.
 15. Perform ESD/EFT pre-compliance checks and thermal soak over the specified external-input range.
 
@@ -398,17 +453,19 @@ Frozen for PCB capture:
 - separate isolated VE.Bus power branch
 - post-conversion low-voltage source ORing
 - two independent ISOW1412 bus domains
-- GPIO allocation
+- GPIO allocation and physical Heltec header mapping
 - test-point set
 - selectable Modbus termination/bias
 - optional VE.Bus termination/bias
 - reserved STB/PD interface footprints
+- 400-kHz LMR38020 switching target (`R_RT = 64.9 kOhm` baseline)
+- approximately 1-A TPS26600 current-limit target (`R_ILIM = 11.8 kOhm` baseline)
 
-Measurement-dependent selections that do not change the topology:
+Measurement-dependent selections/value tuning that do not change the topology:
 
 - exact isolated VE.Bus DC/DC input range/part
 - final D_EXT/D_VE part after drop/thermal measurement
-- exact TPS2660 programming passives
-- exact LMR38020 output set point and RT resistor after source-OR loss is finalized
+- final LMR38020 output set point / `R_FBB` after source-OR loss is measured
+- `C_dVdT` tuning if startup/inrush measurements require it
 
-A topology change to any frozen item requires a new hardware revision.
+A topology change to any frozen item requires a new hardware revision. Passive-value tuning before fabrication freeze does not by itself create a new topology revision, but the final values must be reflected consistently in schematic, BOM and permanent documentation.
