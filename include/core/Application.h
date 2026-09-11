@@ -13,6 +13,7 @@
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
 #include "modbus/ModbusChannelStore.h"
+#include "modbus/Rs485SettingsStore.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
@@ -28,6 +29,10 @@ public:
         }
         if (!modbusChannelStore_.begin()) {
             Serial.println("Failed to open Modbus channel store.");
+            return false;
+        }
+        if (!rs485SettingsStore_.begin()) {
+            Serial.println("Failed to open RS485 settings store.");
             return false;
         }
 
@@ -74,6 +79,10 @@ public:
         lora_.setDownlinkHandler(&Application::downlinkThunk, this);
         registerCoreCapabilities();
 
+        if (!loadRs485Settings()) {
+            Serial.println("Failed to load persisted RS485 settings.");
+            return false;
+        }
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -124,6 +133,17 @@ public:
     const BoardService& board() const { return board_; }
 
 private:
+    enum class ParsedCommandKind : uint8_t {
+        ModbusChannel,
+        Rs485Settings,
+    };
+
+    struct ParsedCommand {
+        ParsedCommandKind kind = ParsedCommandKind::ModbusChannel;
+        lorawan::ModbusChannelCommand modbusChannel;
+        lorawan::Rs485SettingsCommand rs485Settings;
+    };
+
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
@@ -132,31 +152,54 @@ private:
     bool handleLoRaDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
         if (fport != lorawan::kCompatibilityFPort || payload == nullptr || length == 0) return false;
 
-        std::vector<lorawan::ModbusChannelCommand> commands;
+        std::vector<ParsedCommand> commands;
         size_t offset = 0;
         while (offset < length) {
             lorawan::CommandHeader header;
             if (!lorawan::FPort85Codec::readHeader(payload + offset, length - offset, header)) return false;
-            if (header.channelId != lorawan::FPort85Codec::kSystemChannel ||
-                header.type != lorawan::FPort85Codec::kModbusChannelConfigType) {
+
+            ParsedCommand parsed;
+            size_t consumed = 0;
+
+            if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                header.type == lorawan::FPort85Codec::kModbusChannelConfigType) {
+                parsed.kind = ParsedCommandKind::ModbusChannel;
+                if (lorawan::FPort85Codec::decodeModbusChannelCommand(
+                        payload + offset, length - offset, parsed.modbusChannel, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRs485ConfigType) {
+                parsed.kind = ParsedCommandKind::Rs485Settings;
+                if (lorawan::FPort85Codec::decodeRs485SettingsCommand(
+                        payload + offset, length - offset, parsed.rs485Settings, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0 ||
+                    !modbus::esp32SupportsRs485SerialSettings(parsed.rs485Settings.settings)) {
+                    return false;
+                }
+            } else {
                 return false;
             }
 
-            lorawan::ModbusChannelCommand command;
-            size_t consumed = 0;
-            if (lorawan::FPort85Codec::decodeModbusChannelCommand(
-                    payload + offset, length - offset, command, consumed) != lorawan::DecodeStatus::Ok ||
-                consumed == 0) {
-                return false;
-            }
-            commands.push_back(command);
+            commands.push_back(parsed);
             offset += consumed;
         }
 
         for (const auto& command : commands) {
-            if (!applyModbusChannelCommand(command)) return false;
+            if (command.kind == ParsedCommandKind::ModbusChannel) {
+                if (!applyModbusChannelCommand(command.modbusChannel)) return false;
+            } else {
+                if (!applyRs485SettingsCommand(command.rs485Settings)) return false;
+            }
         }
         return true;
+    }
+
+    bool applyRs485SettingsCommand(const lorawan::Rs485SettingsCommand& command) {
+        if (!modbus::esp32SupportsRs485SerialSettings(command.settings)) return false;
+        if (!modbus_.applyRs485SerialSettings(command.settings)) return false;
+        return rs485SettingsStore_.save(command.settings);
     }
 
     bool applyModbusChannelCommand(const lorawan::ModbusChannelCommand& command) {
@@ -183,6 +226,12 @@ private:
             }
         }
         return false;
+    }
+
+    bool loadRs485Settings() {
+        modbus::Rs485SerialSettings settings;
+        if (!rs485SettingsStore_.load(settings)) return false;
+        return modbus_.applyRs485SerialSettings(settings);
     }
 
     bool loadModbusChannels() {
@@ -247,6 +296,12 @@ private:
         Serial.printf("  JoinEUI: %s\n", config_.lorawan.joinEui.c_str());
         Serial.printf("  LoRaWAN provisioned: %s\n", lora_.provisioned() ? "yes" : "no");
         Serial.printf("  Compatibility channels: %u\n", static_cast<unsigned>(channels_.size()));
+        const auto& rs485 = modbus_.rs485SerialSettings();
+        Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
+                      static_cast<unsigned long>(rs485.baudRate),
+                      static_cast<unsigned>(rs485.dataBits),
+                      static_cast<unsigned>(rs485.stopBits),
+                      static_cast<unsigned>(rs485.parity));
         Serial.printf("  Wi-Fi: %s\n", network_.apActive() ? "commissioning AP" : "client");
         Serial.printf("  Address: %s\n", network_.address().toString().c_str());
         Serial.println("Capabilities:");
@@ -264,6 +319,7 @@ private:
     ChannelRegistry channels_;
     ConfigStore configStore_;
     modbus::ModbusChannelStore modbusChannelStore_;
+    modbus::Rs485SettingsStore rs485SettingsStore_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;

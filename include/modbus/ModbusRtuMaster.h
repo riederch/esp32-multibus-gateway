@@ -6,6 +6,7 @@
 #include "board/BoardPins.h"
 #include "ModbusChannel.h"
 #include "ModbusRtuCodec.h"
+#include "Rs485Settings.h"
 
 namespace multibus {
 namespace modbus {
@@ -16,6 +17,42 @@ struct RtuSerialConfig {
     uint32_t responseTimeoutMs = 500;
     uint32_t interFrameDelayUs = 0;
 };
+
+inline bool makeRtuSerialConfig(const Rs485SerialSettings& settings,
+                                RtuSerialConfig& config,
+                                uint32_t responseTimeoutMs = 500) {
+    if (!esp32SupportsRs485SerialSettings(settings) || responseTimeoutMs == 0) return false;
+
+    uint32_t serialMode = 0;
+    if (settings.dataBits == 7) {
+        if (settings.stopBits == Rs485StopBits::One) {
+            if (settings.parity == Rs485Parity::None) serialMode = SERIAL_7N1;
+            else if (settings.parity == Rs485Parity::Even) serialMode = SERIAL_7E1;
+            else serialMode = SERIAL_7O1;
+        } else if (settings.stopBits == Rs485StopBits::Two) {
+            if (settings.parity == Rs485Parity::None) serialMode = SERIAL_7N2;
+            else if (settings.parity == Rs485Parity::Even) serialMode = SERIAL_7E2;
+            else serialMode = SERIAL_7O2;
+        }
+    } else if (settings.dataBits == 8) {
+        if (settings.stopBits == Rs485StopBits::One) {
+            if (settings.parity == Rs485Parity::None) serialMode = SERIAL_8N1;
+            else if (settings.parity == Rs485Parity::Even) serialMode = SERIAL_8E1;
+            else serialMode = SERIAL_8O1;
+        } else if (settings.stopBits == Rs485StopBits::Two) {
+            if (settings.parity == Rs485Parity::None) serialMode = SERIAL_8N2;
+            else if (settings.parity == Rs485Parity::Even) serialMode = SERIAL_8E2;
+            else serialMode = SERIAL_8O2;
+        }
+    }
+
+    if (serialMode == 0) return false;
+    config = RtuSerialConfig{};
+    config.baudRate = settings.baudRate;
+    config.serialMode = serialMode;
+    config.responseTimeoutMs = responseTimeoutMs;
+    return true;
+}
 
 class ModbusRtuMaster {
 public:
@@ -146,7 +183,6 @@ private:
     uint32_t calculatedInterFrameDelayUs() const {
         if (config_.baudRate == 0) return 0;
         if (config_.baudRate > 19200) return 1750;
-        // Conservative 3.5-character RTU silent interval assuming 11 bits/character.
         return static_cast<uint32_t>((38500000ULL + config_.baudRate - 1ULL) / config_.baudRate);
     }
 

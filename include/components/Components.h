@@ -115,6 +115,23 @@ public:
         serialConfig_ = config;
     }
 
+    bool applyRs485SerialSettings(const modbus::Rs485SerialSettings& settings) {
+        modbus::RtuSerialConfig config;
+        if (!modbus::makeRtuSerialConfig(settings, config)) return false;
+
+        if (mode_ == ModbusMode::Master && active_) {
+            if (!rtuMaster_.reconfigure(config)) return false;
+        }
+
+        rs485Settings_ = settings;
+        serialConfig_ = config;
+        return true;
+    }
+
+    const modbus::Rs485SerialSettings& rs485SerialSettings() const {
+        return rs485Settings_;
+    }
+
     const char* name() const override { return "modbus"; }
     const char* sourceId() const override { return "modbus"; }
 
@@ -321,6 +338,7 @@ private:
 
     ModbusMode mode_ = ModbusMode::Disabled;
     bool active_ = false;
+    modbus::Rs485SerialSettings rs485Settings_;
     modbus::RtuSerialConfig serialConfig_;
     modbus::ModbusRtuMaster rtuMaster_;
     std::vector<modbus::ChannelConfig> channels_;

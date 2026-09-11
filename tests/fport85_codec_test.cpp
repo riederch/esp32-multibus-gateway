@@ -10,7 +10,42 @@ using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
+using multibus::lorawan::Rs485SettingsCommand;
+using multibus::modbus::Rs485Parity;
+using multibus::modbus::Rs485StopBits;
 using multibus::modbus::WireDataType;
+
+static void testRs485SettingsReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x78, 0x80, 0x25, 0x00, 0x00, 0x08, 0x01, 0x00};
+    Rs485SettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.settings.baudRate == 9600);
+    assert(command.settings.dataBits == 8);
+    assert(command.settings.stopBits == Rs485StopBits::One);
+    assert(command.settings.parity == Rs485Parity::None);
+}
+
+static void testRs485SettingsAcceptsProtocolValues() {
+    const uint8_t payload[] = {0xf9, 0x78, 0x00, 0xc2, 0x01, 0x00, 0x09, 0x03, 0x02};
+    Rs485SettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.settings.baudRate == 115200);
+    assert(command.settings.dataBits == 9);
+    assert(command.settings.stopBits == Rs485StopBits::OnePointFive);
+    assert(command.settings.parity == Rs485Parity::Odd);
+    assert(!multibus::modbus::esp32SupportsRs485SerialSettings(command.settings));
+}
+
+static void testRs485SettingsRejectsUnknownBaud() {
+    const uint8_t payload[] = {0xf9, 0x78, 0x10, 0x27, 0x00, 0x00, 0x08, 0x01, 0x00};
+    Rs485SettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
 
 static void testAddChannelReferenceVector() {
     const uint8_t payload[] = {0xff, 0xef, 0x01, 0x01, 0x01, 0xff, 0xff, 0x0a, 0x01};
@@ -104,6 +139,9 @@ static void testCollectionException() {
 }
 
 int main() {
+    testRs485SettingsReferenceVector();
+    testRs485SettingsAcceptsProtocolValues();
+    testRs485SettingsRejectsUnknownBaud();
     testAddChannelReferenceVector();
     testAddressAndSignedQuantityAreLittleEndian();
     testNameReferenceVector();
