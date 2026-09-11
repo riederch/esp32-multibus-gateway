@@ -13,31 +13,40 @@ Reference board:
 - BAT / SOL support
 - external GNSS connector
 
-The Rev-A carrier adds protected field power, one isolated Modbus RS485 interface and one independent isolated Victron VE.Bus interface.
+The Rev-A carrier adds protected external field power, optional isolated VE.Bus-derived power, one isolated Modbus RS485 interface and one independent isolated Victron VE.Bus interface.
 
 ## Rev-A electrical architecture
 
 ```text
-                     +-----------------------+
-V+ 5..30 V ----------| input protection      |
-V- ------------------| TPS2660 + LMR38020    |
-                     +-----------+-----------+
-                                 |
-                              4.75 V
-                                 |
-                           reverse blocking
-                                 |
-                                 +-------------------> Heltec 5V
-                                                        |
-                         +------------------------------+------------------------------+
-                         |                              |                              |
-                  ISOW1412 #1                    ISOW1412 #2                    board services
-                  Modbus isolated                VE.Bus isolated               GNSS / OLED / LoRa
-                         |                              |
-                      A / B                         RJ45 A / B
+External V+ / V-
+      |
+ input protection
+      |
+ non-isolated DC/DC
+      |
+ EXT_5V
+      |
+ D_EXT
+      +----------------------+
+                             |
+                          SYS_5V ------ Heltec 5V
+                             |
+ D_VE                        |
+      +----------------------+
+      |
+ VE_ISO_5V
+      |
+ isolated DC/DC
+      ||
+      || galvanic isolation
+      ||
+      |
+VE.Bus V+ / VE.Bus GND
 ```
 
-`V-` is the carrier/Core supply return. It is not connected to either isolated RS485 bus-side ground. Each ISOW1412 creates its own isolated bus-side supply/reference domain.
+The two raw source domains are never directly tied together. Source ORing happens only on the Core-side low-voltage rail.
+
+`V-` is the external supply/Core return. `VEBUS_GND` remains galvanically isolated from `CORE_GND`; VE.Bus-derived power crosses an isolated DC/DC converter before joining `SYS_5V`.
 
 ## Field terminal
 
@@ -50,31 +59,15 @@ B    isolated Modbus RS485 B
 
 The Modbus transceiver bus-side ground remains floating. A separate Modbus COM terminal is not required for Rev A; test pads expose the isolated reference for commissioning and EMC measurements.
 
-## Power input
+## External power branch
 
 Rev A uses:
 
 1. **TPS2660** industrial eFuse as the protected 5-30 V input stage.
 2. **LMR38020** synchronous buck converter.
-3. A reverse-current-blocking ideal-diode stage between the carrier supply and the Heltec 5-V pin.
+3. A one-way low-loss OR element `D_EXT` between `EXT_5V` and `SYS_5V`.
 
-The LMR38020 is configured for approximately **4.75 V** rather than 5.00 V. This gives native USB power priority when USB-C is attached and prevents the external supply path from driving the USB rail through the carrier.
-
-LMR38020 design target:
-
-```text
-VIN         5-30 V after input protection
-VOUT        4.75 V nominal
-fSW         400 kHz
-L           15 uH
-RFBT        100 kOhm
-RFBB        26.7 kOhm, 1 %
-RT          64.9 kOhm, 1 %
-COUT        3 x 22 uF X7R, >= 10 V
-CIN         4.7 uF + 100 nF local, voltage rating >= 50 V
-```
-
-The values follow the LMR38020 5-V/400-kHz reference design, with the feedback divider adjusted to 4.75 V.
+The exact buck output set point is chosen together with the forward drop of `D_EXT` so that `SYS_5V` remains inside the Heltec 5-V input range. The previous fixed 4.75-V pre-OR rail assumption is removed.
 
 ### Input protection
 
@@ -93,13 +86,43 @@ UVLO must not use the TPS2660 internal 15-V default because the product supports
 
 Place a field-input TVS, bulk capacitor and local ceramic bypassing directly behind the connector/protection stage.
 
+## VE.Bus optional power branch
+
+VE.Bus pin 2 and pin 3 feed a dedicated galvanically isolated DC/DC converter:
+
+```text
+VEBUS_VPLUS / VEBUS_GND
+        |
+   input protection
+        |
+ isolated DC/DC
+        ||
+        || isolation barrier
+        ||
+        |
+    VE_ISO_5V
+        |
+       D_VE
+        |
+      SYS_5V
+```
+
+The isolated converter input is referenced only to `VEBUS_GND`. Its output return is `CORE_GND`.
+
+The exact input range/type of the isolated converter is selected after measuring VE.Bus V+ on the target MultiPlus across its relevant operating states. Prototype options may use suitable 9-18 V -> 5 V or 18-36 V -> 5 V isolated modules depending on the measured source.
+
 ## USB-C coexistence
 
-The Heltec board carries native USB-C. Carrier power must never back-feed the USB source.
+The Heltec board carries native USB-C. Both carrier power branches are one-way into `SYS_5V`, so USB VBUS must not back-feed either branch.
 
-Rev A therefore uses a reverse-blocking ideal-diode/load-switch path from the carrier buck output to the Heltec 5-V pin. The carrier rail is deliberately set below nominal USB VBUS so USB naturally becomes the dominant source when connected.
+The preferred source hierarchy is:
 
-No firmware-controlled power-source switching is required for normal operation.
+```text
+USB VBUS       highest nominal source
+SYS_5V carrier slightly below USB under normal load
+```
+
+This gives USB natural priority during service/programming without firmware-controlled source switching.
 
 ## Modbus RS485
 
@@ -150,8 +173,8 @@ RJ45 assignment for Rev A:
 | Pin | Signal | Rev-A connection |
 |---:|---|---|
 | 1 | NC | open |
-| 2 | V+ | test/provisioning power input path, DNI by default |
-| 3 | GND | VE.Bus isolated-side reference / test point |
+| 2 | V+ | optional isolated gateway-power input |
+| 3 | GND | VE.Bus reference / isolated-power input return |
 | 4 | A | isolated VE.Bus transceiver A |
 | 5 | B | isolated VE.Bus transceiver B |
 | 6 | STB | optional isolated control footprint, DNI |
@@ -161,16 +184,6 @@ RJ45 assignment for Rev A:
 ### VE.Bus termination/bias
 
 Do not populate additional termination or bias by default. Provide footprints and solder-jumper options only. The production values are determined from measurement on the target MultiPlus network.
-
-### VE.Bus V+ optional power path
-
-RJ45 pin 2 is routed to:
-
-- protected test pad `VEBUS_VPLUS`
-- optional high-voltage power-input footprint
-- no connection to the system rail in default Rev-A population
-
-This allows VE.Bus-derived gateway power to be enabled later without changing the PCB after voltage/current availability has been measured.
 
 ## GPIO allocation
 
@@ -231,8 +244,8 @@ The preferred initial module is the same electrical class as the Heltec expansio
 ## PCB layout rules
 
 - 4-layer PCB preferred.
-- Keep the LMR38020 hot loop compact and away from LoRa/GNSS antennas.
-- Maintain the ISOW1412 isolation-barrier clearance with no copper pour crossing the barrier.
+- Keep switching-regulator hot loops compact and away from LoRa/GNSS antennas.
+- Maintain all isolation-barrier clearance with no copper pour crossing the barrier.
 - Keep Modbus and VE.Bus isolated domains physically separated.
 - Place TVS devices at their connectors before long PCB traces.
 - Route RS485 A/B as coupled differential pairs with no stubs except very short protection/test-point branches.
@@ -245,7 +258,8 @@ The preferred initial module is the same electrical class as the Heltec expansio
 ```text
 VIN_FIELD
 VPROTECTED
-VCORE_IN_4V75
+EXT_5V
+SYS_5V
 CORE_GND
 3V3
 
@@ -266,6 +280,7 @@ VE_RX
 VE_DIR
 VEBUS_VPLUS
 VEBUS_GND
+VE_ISO_5V
 ```
 
 ## Hardware freeze status
@@ -276,9 +291,9 @@ Items that remain to be measured during bring-up are validation parameters rathe
 
 - actual VE.Bus A/B polarity and idle levels
 - VE.Bus native termination/bias behaviour
-- VE.Bus V+ voltage/current availability
+- VE.Bus V+ voltage/current availability and resulting isolated DC/DC module/input range
 - STB/PD electrical behaviour
 - EMC/surge performance of the assembled PCB
-- maximum thermal rise at 5-V input and maximum load
+- maximum thermal rise and SYS_5V voltage margin under worst-case load
 
-See `docs/hardware-rev-a.md` for the schematic capture specification and BOM.
+See `docs/hardware-rev-a.md` and `docs/power-topology-rev-a.md` for the schematic-capture specification.
