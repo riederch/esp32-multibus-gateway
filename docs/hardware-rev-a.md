@@ -8,17 +8,18 @@ This document is the schematic-capture specification for the first MultiBus carr
 J1 FIELD INPUT
 V+ / V- / A / B
    |
-   +-- protected power --> 4.75 V --> Heltec 5V
-   |
-   `-- isolated Modbus A/B --> ESP32-S3 UART
-
-J2 VE.BUS RJ45
-   |
-   +-- isolated VE.Bus A/B --> ESP32-S3 UART
-   |
-   +-- STB/PD optional isolated footprints
-   `-- V+ optional power path, DNI
+   +-- protected external power --> non-isolated DC/DC --> D_EXT --+
+   |                                                               |
+   `-- isolated Modbus A/B --> ESP32-S3 UART                        +--> SYS_5V --> Heltec 5V
+                                                                   |
+J2 VE.BUS RJ45                                                     |
+   |                                                               |
+   +-- isolated VE.Bus A/B --> ESP32-S3 UART                        |
+   +-- STB/PD optional isolated footprints                          |
+   `-- V+ / GND --> isolated DC/DC --> D_VE ------------------------+
 ```
+
+The external and VE.Bus raw supply domains are never directly paralleled. They are converted independently and ORed only on the Core-side low-voltage rail.
 
 ## 2. Mandatory schematic sheets
 
@@ -43,7 +44,7 @@ J1.4  MODBUS_B
 
 Preferred family: Phoenix Contact MSTBA 2,5/4-G-5,08 or footprint-compatible equivalent.
 
-## 4. Field power
+## 4. External power branch
 
 ### 4.1 Input protection
 
@@ -75,7 +76,7 @@ Provide footprints for:
 - 47-100 uF bulk capacitor after protection
 - `VIN_FIELD` and `VPROTECTED` test points
 
-### 4.2 Buck converter
+### 4.2 External DC/DC
 
 U2: TI LMR38020.
 
@@ -83,16 +84,14 @@ Target:
 
 ```text
 VIN   = VPROTECTED
-VOUT  = 4.75 V nominal
+VOUT  = EXT_5V, set together with D_EXT forward drop
 fSW   = 400 kHz
 IOUT  = design for 2 A peak capability
 ```
 
-Reference values:
+Reference starting values:
 
 ```text
-RFBT  = 100 kOhm, 1 %
-RFBB  = 26.7 kOhm, 1 %
 RT    = 64.9 kOhm, 1 %
 L1    = 15 uH, Isat >= 3 A preferred, low DCR
 CBOOT = 100 nF
@@ -100,20 +99,22 @@ COUT  = 3 x 22 uF X7R, >= 10 V
 CIN   = 4.7 uF / 50 V + 100 nF directly at VIN/GND
 ```
 
+The final feedback divider is selected after choosing `D_EXT`; `SYS_5V` rather than `EXT_5V` is the controlled system-level voltage target.
+
 Follow the LMR38020 layout example for the VIN-SW-inductor-output current loop.
 
-### 4.3 Heltec supply isolation from USB
+### 4.3 External branch OR element
 
-Insert a reverse-current-blocking ideal-diode/load-switch stage between `VBUCK_4V75` and the Heltec 5-V pin.
+Place a one-way low-loss OR element `D_EXT` between `EXT_5V` and `SYS_5V`.
 
 Required behaviour:
 
-- current from carrier to Heltec is allowed
-- current from Heltec/USB back into the buck converter is blocked
-- USB at nominal 5 V naturally overrides the 4.75-V carrier rail
-- at least 1 A continuous capability, 2 A transient target
+- current from external branch to `SYS_5V` is allowed
+- reverse current into the external converter is blocked
+- voltage drop is low enough to keep the Heltec supply inside specification
+- current capability >= 1 A continuous, 2 A transient target
 
-Candidate class: LM66100 or equivalent reverse-blocking ideal-diode device. Final footprint choice may follow distributor availability without changing the topology.
+A suitable Schottky diode is acceptable for Rev A. The previously considered LM66100/LM66200 solution is not part of this revision.
 
 ## 5. Modbus isolated RS485
 
@@ -220,21 +221,55 @@ Required footprint flexibility:
 
 This is a population option, not a PCB-layout blocker.
 
-## 8. VE.Bus V+ optional supply
+## 8. VE.Bus isolated power branch
 
-Route RJ45 pin 2 only to:
+Route RJ45 pin 2 and pin 3 to a dedicated isolated DC/DC input section:
 
 ```text
-VEBUS_VPLUS test point
-optional fuse/protection footprint
-optional regulator-input footprint
+VEBUS_VPLUS / VEBUS_GND
+        |
+ fuse / protection
+        |
+ isolated DC/DC
+        ||
+        || galvanic barrier
+        ||
+        |
+    VE_ISO_5V
+        |
+       D_VE
+        |
+      SYS_5V
 ```
 
-Default Rev-A assembly leaves this path electrically disconnected from the Core supply.
+Requirements:
 
-Reserve enough PCB area for a second high-voltage buck/ideal-diode path. The intended topology is the same class as the field-input path, but it is populated only after actual V+ voltage and available current have been measured.
+- input referenced only to `VEBUS_GND`
+- output return connected to `CORE_GND`
+- no direct copper connection between `VEBUS_GND` and `CORE_GND`
+- output approximately 5 V class, selected with `D_VE` drop
+- sufficient current for the gateway plus margin
+- reverse blocking through `D_VE`
 
-## 9. Heltec carrier connections
+The exact isolated converter input range is selected after measuring `VEBUS_VPLUS` on the target MultiPlus. For prototypes, suitable module classes include 9-18 V -> 5 V and 18-36 V -> 5 V isolated converters. The PCB must reserve a module/footprint area that can accommodate the selected converter family without changing the rest of the topology.
+
+## 9. SYS_5V and USB coexistence
+
+The carrier rail is formed only after both branch converters:
+
+```text
+EXT_5V ---- D_EXT ----+
+                      +---- SYS_5V ---- Heltec 5V
+VE_ISO_5V - D_VE -----+
+```
+
+Both OR elements block reverse current into their source branches.
+
+USB-C remains on the Heltec board. The carrier voltage targets must be selected so USB VBUS has natural priority during service/programming while `SYS_5V` remains within the Heltec input specification.
+
+No firmware-controlled power-source switching is required.
+
+## 10. Heltec carrier connections
 
 Mandatory carrier signals:
 
@@ -256,7 +291,7 @@ The remaining Heltec onboard resources stay connected on the module itself.
 
 Do not use GPIO3, GPIO45 or GPIO46 for Rev-A carrier functions because they are ESP32-S3 strapping pins.
 
-## 10. Mechanical / RF rules
+## 11. Mechanical / RF rules
 
 - keep the Heltec LoRa antenna region clear according to the module reference design
 - do not place switching-regulator magnetics underneath or directly next to either RF antenna region
@@ -266,58 +301,65 @@ Do not use GPIO3, GPIO45 or GPIO46 for Rev-A carrier functions because they are 
 - maintain direct access to Heltec USB-C without removing the carrier
 - preserve access to USER/PRG button and OLED
 
-## 11. Rev-A BOM - critical parts
+## 12. Rev-A BOM - critical parts
 
 | Ref | Function | Preferred part / class | Population |
 |---|---|---|---|
-| U1 | input eFuse | TPS2660 | required |
-| U2 | 5-30 V buck | LMR38020 | required |
+| U1 | external input eFuse | TPS2660 | required |
+| U2 | external 5-30 V DC/DC | LMR38020 | required |
+| D_EXT | external source OR element | low-loss Schottky / equivalent | required |
 | U3 | Modbus isolated RS485 + isolated power | ISOW1412 | required |
 | U4 | Modbus TVS | SM712 or equivalent | required |
 | U5 | VE.Bus isolated RS485 + isolated power | ISOW1412 | required |
 | U6 | VE.Bus TVS | SM712 or equivalent | required |
-| U7 | 4.75-V reverse blocker | LM66100 class or equivalent | required |
+| U_VEPWR | VE.Bus isolated DC/DC | isolated 5-V-output module, input range selected after V+ measurement | optional until characterized, topology required |
+| D_VE | VE.Bus source OR element | low-loss Schottky / equivalent | populated with VE.Bus power option |
 | J1 | 4-pin field connector | 5.08-mm pluggable terminal | required |
 | J2 | VE.Bus connector | RJ45 8P8C | required |
 | R_MB_TERM | Modbus termination | 120 Ohm 1 % | required, jumper selectable |
 | R_MB_PU/PD | Modbus bias | 680 Ohm 1 % | required, jumper selectable |
 | R_VE_TERM | VE.Bus termination | 120 Ohm 1 % | footprint, DNI by default |
 | R_VE_PU/PD | VE.Bus bias | 680 Ohm 1 % | footprint, DNI by default |
-| L1 | buck inductor | 15 uH, >=3-A Isat | required |
+| L1 | external buck inductor | 15 uH, >=3-A Isat | required |
 | STB interface | isolated optional control | suitable isolator/open drain | footprint, DNI |
 | PD interface | isolated optional sense | suitable digital isolator/input | footprint, DNI |
-| VE power path | optional VE.Bus-derived power | protected HV buck + reverse block | footprint/area reserved, DNI |
 
 Passives use X7R ceramics where practical and voltage derating appropriate for the rail.
 
-## 12. Bring-up sequence
+## 13. Bring-up sequence
 
-1. Assemble power section only; Heltec and bus ICs absent.
-2. Sweep J1 input from 5 V to 30 V and verify `VPROTECTED` and 4.75-V rail.
+1. Assemble external power section only; Heltec and bus ICs absent.
+2. Sweep J1 input from 5 V to 30 V and verify `VPROTECTED`, `EXT_5V` and `SYS_5V`.
 3. Verify reverse-polarity protection and current limiting with a current-limited bench supply.
-4. Attach Heltec; verify carrier power and USB power independently.
-5. Connect USB while carrier supply is active and verify no reverse current into either source.
-6. Populate/enable Modbus interface; check DE/RE default state and loopback with an isolated USB-RS485 adapter.
-7. Verify Modbus at 9.6, 19.2, 115.2 and 256 kbit/s electrical stress test.
-8. Populate VE.Bus interface but begin receive-only on a real MultiPlus.
-9. Measure A/B polarity, idle bias, termination and frame timing.
-10. Only after passive measurements, enable VE.Bus transmission.
-11. Measure RJ45 V+ and STB/PD behaviour before populating those optional paths.
-12. Perform ESD/EFT pre-compliance checks and thermal soak at 5-V and 30-V input.
+4. Verify `D_EXT` blocks reverse current.
+5. Attach Heltec; verify carrier power and USB power independently.
+6. Connect USB while carrier supply is active and verify no reverse current into the external branch.
+7. Populate/enable Modbus interface; check DE/RE default state and loopback with an isolated USB-RS485 adapter.
+8. Verify Modbus at 9.6, 19.2, 115.2 and 256 kbit/s electrical stress test.
+9. Populate VE.Bus interface but begin receive-only on a real MultiPlus.
+10. Measure A/B polarity, idle bias, termination and frame timing.
+11. Measure RJ45 V+ and STB/PD behaviour.
+12. Select/populate the isolated VE.Bus DC/DC matching the measured V+ range.
+13. Verify isolation between `VEBUS_GND` and `CORE_GND`, then verify the VE.Bus supply branch and `D_VE` reverse blocking.
+14. Power external, VE.Bus and USB combinations and verify stable `SYS_5V` with no back-feed.
+15. Perform ESD/EFT pre-compliance checks and thermal soak.
 
-## 13. Rev-A freeze rule
+## 14. Rev-A freeze rule
 
 The following are frozen for PCB capture:
 
 - connector functions
-- protected 5-30-V field input
-- 4.75-V carrier rail
-- two independent ISOW1412 bus domains
+- protected external 5-30-V field-input branch
+- independent isolated VE.Bus power branch
+- low-voltage ORing after conversion
+- `SYS_5V` as common carrier rail
+- two independent ISOW1412 data domains
 - GPIO allocation
 - test-point set
 - selectable Modbus termination/bias
 - optional VE.Bus termination/bias
 - reserved STB/PD interface footprints
-- reserved VE.Bus V+ power option
+
+The exact VE.Bus isolated DC/DC input range is a population choice determined by measurement and does not change the topology.
 
 A change to any frozen item requires a new hardware revision.
