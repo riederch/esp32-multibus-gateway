@@ -273,9 +273,14 @@ private:
         }
 
         if (width == 4) {
-            const uint8_t variant = rawType <= 0x0dU
-                ? static_cast<uint8_t>((rawType - 0x04U) & 0x03U)
-                : static_cast<uint8_t>((rawType - 0x10U) & 0x03U);
+            uint8_t base = 0;
+            if (rawType >= 0x04U && rawType <= 0x07U) base = 0x04U;
+            else if (rawType >= 0x0aU && rawType <= 0x0dU) base = 0x0aU;
+            else if (rawType >= 0x10U && rawType <= 0x13U) base = 0x10U;
+            else if (rawType >= 0x16U && rawType <= 0x19U) base = 0x16U;
+            else return false;
+
+            const uint8_t variant = static_cast<uint8_t>(rawType - base);
             static const uint8_t kOrders[4][4] = {
                 {0, 1, 2, 3},
                 {1, 0, 3, 2},
