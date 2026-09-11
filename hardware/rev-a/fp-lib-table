@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "multibus-rev-a")(type "KiCad")(uri "${KIPRJMOD}/multibus-rev-a.pretty")(options "")(descr "Rev A local footprints"))
+)
