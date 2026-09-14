@@ -13,6 +13,7 @@
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
 #include "modbus/ModbusChannelStore.h"
+#include "modbus/ModbusMasterSettingsStore.h"
 #include "modbus/Rs485SettingsStore.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
@@ -33,6 +34,10 @@ public:
         }
         if (!rs485SettingsStore_.begin()) {
             Serial.println("Failed to open RS485 settings store.");
+            return false;
+        }
+        if (!modbusMasterSettingsStore_.begin()) {
+            Serial.println("Failed to open Modbus master settings store.");
             return false;
         }
 
@@ -81,6 +86,10 @@ public:
 
         if (!loadRs485Settings()) {
             Serial.println("Failed to load persisted RS485 settings.");
+            return false;
+        }
+        if (!loadModbusMasterSettings()) {
+            Serial.println("Failed to load persisted Modbus master settings.");
             return false;
         }
         if (!loadModbusChannels()) {
@@ -136,12 +145,14 @@ private:
     enum class ParsedCommandKind : uint8_t {
         ModbusChannel,
         Rs485Settings,
+        ModbusMasterSettings,
     };
 
     struct ParsedCommand {
         ParsedCommandKind kind = ParsedCommandKind::ModbusChannel;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
+        lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
     };
 
     static void factoryResetThunk(void* context) {
@@ -151,6 +162,7 @@ private:
     void clearSubsystemStores() {
         modbusChannelStore_.clear();
         rs485SettingsStore_.clear();
+        modbusMasterSettingsStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -187,6 +199,15 @@ private:
                     !modbus::esp32SupportsRs485SerialSettings(parsed.rs485Settings.settings)) {
                     return false;
                 }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kModbusGlobalConfigType) {
+                parsed.kind = ParsedCommandKind::ModbusMasterSettings;
+                if (lorawan::FPort85Codec::decodeModbusMasterSettingsCommand(
+                        payload + offset, length - offset, parsed.modbusMasterSettings, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0 ||
+                    !modbus::runtimeSupportsModbusMasterSettings(parsed.modbusMasterSettings.settings)) {
+                    return false;
+                }
             } else {
                 return false;
             }
@@ -196,10 +217,16 @@ private:
         }
 
         for (const auto& command : commands) {
-            if (command.kind == ParsedCommandKind::ModbusChannel) {
-                if (!applyModbusChannelCommand(command.modbusChannel)) return false;
-            } else {
-                if (!applyRs485SettingsCommand(command.rs485Settings)) return false;
+            switch (command.kind) {
+                case ParsedCommandKind::ModbusChannel:
+                    if (!applyModbusChannelCommand(command.modbusChannel)) return false;
+                    break;
+                case ParsedCommandKind::Rs485Settings:
+                    if (!applyRs485SettingsCommand(command.rs485Settings)) return false;
+                    break;
+                case ParsedCommandKind::ModbusMasterSettings:
+                    if (!applyModbusMasterSettingsCommand(command.modbusMasterSettings)) return false;
+                    break;
             }
         }
         return true;
@@ -212,9 +239,18 @@ private:
         if (!modbus_.applyRs485SerialSettings(command.settings)) return false;
         if (rs485SettingsStore_.save(command.settings)) return true;
 
-        // Persistence failed: restore the previously active UART configuration
-        // so runtime state and the settings that survive reboot cannot diverge.
         modbus_.applyRs485SerialSettings(previous);
+        return false;
+    }
+
+    bool applyModbusMasterSettingsCommand(const lorawan::ModbusMasterSettingsCommand& command) {
+        if (!modbus::runtimeSupportsModbusMasterSettings(command.settings)) return false;
+
+        const modbus::ModbusMasterSettings previous = modbus_.modbusMasterSettings();
+        if (!modbus_.applyModbusMasterSettings(command.settings)) return false;
+        if (modbusMasterSettingsStore_.save(command.settings)) return true;
+
+        modbus_.applyModbusMasterSettings(previous);
         return false;
     }
 
@@ -248,6 +284,12 @@ private:
         modbus::Rs485SerialSettings settings;
         if (!rs485SettingsStore_.load(settings)) return false;
         return modbus_.applyRs485SerialSettings(settings);
+    }
+
+    bool loadModbusMasterSettings() {
+        modbus::ModbusMasterSettings settings;
+        if (!modbusMasterSettingsStore_.load(settings)) return false;
+        return modbus_.applyModbusMasterSettings(settings);
     }
 
     bool loadModbusChannels() {
@@ -318,6 +360,11 @@ private:
                       static_cast<unsigned>(rs485.dataBits),
                       static_cast<unsigned>(rs485.stopBits),
                       static_cast<unsigned>(rs485.parity));
+        const auto& master = modbus_.modbusMasterSettings();
+        Serial.printf("  Modbus polling: interval=%u ms, timeout=%u ms, retries=%u\n",
+                      static_cast<unsigned>(master.executionIntervalMs),
+                      static_cast<unsigned>(master.maxResponseTimeMs),
+                      static_cast<unsigned>(master.maxRetryTimes));
         Serial.printf("  Wi-Fi: %s\n", network_.apActive() ? "commissioning AP" : "client");
         Serial.printf("  Address: %s\n", network_.address().toString().c_str());
         Serial.println("Capabilities:");
@@ -336,6 +383,7 @@ private:
     ConfigStore configStore_;
     modbus::ModbusChannelStore modbusChannelStore_;
     modbus::Rs485SettingsStore rs485SettingsStore_;
+    modbus::ModbusMasterSettingsStore modbusMasterSettingsStore_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;
