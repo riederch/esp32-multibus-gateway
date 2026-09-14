@@ -153,6 +153,13 @@ public:
         retryAtMs_ = nowMs + kCompatibilityReportRetryMs;
     }
 
+    void abortReport() {
+        pending_ = false;
+        pendingLength_ = 0;
+        reportInProgress_ = false;
+        cursor_ = 0;
+    }
+
     bool reportInProgress() const { return reportInProgress_ || pending_; }
     uint32_t nextReportAtMs() const { return nextReportAtMs_; }
 
