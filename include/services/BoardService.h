@@ -10,9 +10,16 @@ namespace multibus {
 
 class BoardService {
 public:
-    bool begin(ConfigStore& configStore, SecurityStore& securityStore) {
+    using FactoryResetHandler = void (*)(void* context);
+
+    bool begin(ConfigStore& configStore,
+               SecurityStore& securityStore,
+               FactoryResetHandler factoryResetHandler = nullptr,
+               void* factoryResetContext = nullptr) {
         configStore_ = &configStore;
         securityStore_ = &securityStore;
+        factoryResetHandler_ = factoryResetHandler;
+        factoryResetContext_ = factoryResetContext;
 
         pinMode(board::USER_BUTTON, INPUT_PULLUP);
         pinMode(board::STATUS_LED, OUTPUT);
@@ -70,6 +77,7 @@ private:
 
         if (configStore_ != nullptr) configStore_->clear();
         if (securityStore_ != nullptr) securityStore_->clear();
+        if (factoryResetHandler_ != nullptr) factoryResetHandler_(factoryResetContext_);
 
         // Clear any Wi-Fi credentials cached by the ESP32 Wi-Fi stack as well.
         WiFi.disconnect(true, true);
@@ -82,6 +90,8 @@ private:
 
     ConfigStore* configStore_ = nullptr;
     SecurityStore* securityStore_ = nullptr;
+    FactoryResetHandler factoryResetHandler_ = nullptr;
+    void* factoryResetContext_ = nullptr;
     bool resetArmed_ = false;
     bool resetWarning_ = false;
     uint32_t pressStartedAt_ = 0;
