@@ -60,7 +60,7 @@ public:
             return false;
         }
 
-        if (!board_.begin(configStore_, security_)) {
+        if (!board_.begin(configStore_, security_, &Application::factoryResetThunk, this)) {
             Serial.println("Failed to initialize board service.");
             return false;
         }
@@ -144,6 +144,15 @@ private:
         lorawan::Rs485SettingsCommand rs485Settings;
     };
 
+    static void factoryResetThunk(void* context) {
+        if (context != nullptr) static_cast<Application*>(context)->clearSubsystemStores();
+    }
+
+    void clearSubsystemStores() {
+        modbusChannelStore_.clear();
+        rs485SettingsStore_.clear();
+    }
+
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
@@ -198,8 +207,15 @@ private:
 
     bool applyRs485SettingsCommand(const lorawan::Rs485SettingsCommand& command) {
         if (!modbus::esp32SupportsRs485SerialSettings(command.settings)) return false;
+
+        const modbus::Rs485SerialSettings previous = modbus_.rs485SerialSettings();
         if (!modbus_.applyRs485SerialSettings(command.settings)) return false;
-        return rs485SettingsStore_.save(command.settings);
+        if (rs485SettingsStore_.save(command.settings)) return true;
+
+        // Persistence failed: restore the previously active UART configuration
+        // so runtime state and the settings that survive reboot cannot diverge.
+        modbus_.applyRs485SerialSettings(previous);
+        return false;
     }
 
     bool applyModbusChannelCommand(const lorawan::ModbusChannelCommand& command) {
