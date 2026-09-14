@@ -10,6 +10,7 @@
 #include "core/LoRaWanIdentity.h"
 #include "core/Transport.h"
 #include "modbus/ModbusChannel.h"
+#include "modbus/ModbusMasterSettings.h"
 #include "modbus/ModbusRtuMaster.h"
 
 namespace multibus {
@@ -117,7 +118,7 @@ public:
 
     bool applyRs485SerialSettings(const modbus::Rs485SerialSettings& settings) {
         modbus::RtuSerialConfig config;
-        if (!modbus::makeRtuSerialConfig(settings, config)) return false;
+        if (!modbus::makeRtuSerialConfig(settings, config, masterSettings_.maxResponseTimeMs)) return false;
 
         if (mode_ == ModbusMode::Master && active_) {
             if (!rtuMaster_.reconfigure(config)) return false;
@@ -132,6 +133,27 @@ public:
         return rs485Settings_;
     }
 
+    bool applyModbusMasterSettings(const modbus::ModbusMasterSettings& settings) {
+        if (!modbus::runtimeSupportsModbusMasterSettings(settings)) return false;
+
+        modbus::RtuSerialConfig config;
+        if (!modbus::makeRtuSerialConfig(rs485Settings_, config, settings.maxResponseTimeMs)) return false;
+
+        if (mode_ == ModbusMode::Master && active_) {
+            if (!rtuMaster_.reconfigure(config)) return false;
+        }
+
+        masterSettings_ = settings;
+        serialConfig_ = config;
+        pollRetryCount_ = 0;
+        nextPollAtMs_ = millis();
+        return true;
+    }
+
+    const modbus::ModbusMasterSettings& modbusMasterSettings() const {
+        return masterSettings_;
+    }
+
     const char* name() const override { return "modbus"; }
     const char* sourceId() const override { return "modbus"; }
 
@@ -144,9 +166,11 @@ public:
                 capabilities.add("modbus.read");
                 capabilities.add("modbus.write");
                 capabilities.add("modbus.raw");
+                capabilities.add("modbus.polling");
                 capabilities.add("modbus.compatibility-channels");
                 if (!rtuMaster_.begin(serialConfig_)) return false;
                 active_ = true;
+                nextPollAtMs_ = millis();
                 return true;
             case ModbusMode::Slave:
                 capabilities.add("modbus.slave");
@@ -161,6 +185,7 @@ public:
 
     bool upsertChannel(const modbus::ChannelConfig& config) {
         if (!modbus::validChannelConfig(config)) return false;
+        cache_[config.slot] = PollCache{};
         for (auto& current : channels_) {
             if (current.slot == config.slot) {
                 current = config;
@@ -175,6 +200,9 @@ public:
         for (auto it = channels_.begin(); it != channels_.end(); ++it) {
             if (it->slot == slot) {
                 channels_.erase(it);
+                cache_[slot] = PollCache{};
+                if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
+                pollRetryCount_ = 0;
                 return true;
             }
         }
@@ -212,7 +240,44 @@ public:
         return String(value);
     }
 
-    void loop() override {}
+    void loop() override {
+        if (mode_ != ModbusMode::Master || !active_ || channels_.empty()) return;
+
+        const uint32_t now = millis();
+        if (static_cast<int32_t>(now - nextPollAtMs_) < 0) return;
+        if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
+
+        const modbus::ChannelConfig& channel = channels_[pollChannelIndex_];
+        modbus::DecodedScalar values[2];
+        uint8_t valueCount = 0;
+        PollCache& cached = cache_[channel.slot];
+
+        if (rtuMaster_.read(channel, values, valueCount)) {
+            cached.valid = true;
+            cached.valueCount = valueCount;
+            cached.values[0] = values[0];
+            if (valueCount > 1) cached.values[1] = values[1];
+            cached.updatedAtMs = millis();
+            cached.lastStatus = modbus::RtuDecodeStatus::Ok;
+            cached.lastExceptionCode = 0;
+            pollRetryCount_ = 0;
+            advancePollChannel();
+        } else if (pollRetryCount_ < masterSettings_.maxRetryTimes) {
+            ++pollRetryCount_;
+            cached.lastStatus = rtuMaster_.lastStatus();
+            cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
+        } else {
+            cached.valid = false;
+            cached.valueCount = 0;
+            cached.lastStatus = rtuMaster_.lastStatus();
+            cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
+            pollRetryCount_ = 0;
+            advancePollChannel();
+        }
+
+        nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
+    }
+
     bool active() const { return active_; }
     bool online() const override {
         return mode_ == ModbusMode::Master && active_ && rtuMaster_.online();
@@ -261,12 +326,11 @@ public:
         const modbus::ChannelConfig* channel = channelForSlot(slot);
         if (channel == nullptr || registerIndex >= channel->quantity) return false;
 
-        modbus::DecodedScalar values[2];
-        uint8_t valueCount = 0;
-        if (!rtuMaster_.read(*channel, values, valueCount) || registerIndex >= valueCount) return false;
+        const PollCache& cached = cache_[slot];
+        if (!cached.valid || registerIndex >= cached.valueCount) return false;
 
         value.valid = true;
-        const auto& scalar = values[registerIndex];
+        const auto& scalar = cached.values[registerIndex];
         switch (scalar.kind) {
             case modbus::ScalarKind::Boolean:
                 value.type = DataType::Boolean;
@@ -291,9 +355,35 @@ public:
 
     bool writePoint(const String&, const DataValue&) override { return false; }
 
+    bool hasValidCache(uint8_t slot) const {
+        return slot < modbus::kCompatibilitySlotCount && cache_[slot].valid;
+    }
+
+    uint32_t cacheAgeMs(uint8_t slot) const {
+        if (!hasValidCache(slot)) return 0;
+        return millis() - cache_[slot].updatedAtMs;
+    }
+
     const modbus::ModbusRtuMaster& rtuMaster() const { return rtuMaster_; }
 
 private:
+    struct PollCache {
+        bool valid = false;
+        uint8_t valueCount = 0;
+        modbus::DecodedScalar values[2];
+        uint32_t updatedAtMs = 0;
+        modbus::RtuDecodeStatus lastStatus = modbus::RtuDecodeStatus::Truncated;
+        uint8_t lastExceptionCode = 0;
+    };
+
+    void advancePollChannel() {
+        if (channels_.empty()) {
+            pollChannelIndex_ = 0;
+            return;
+        }
+        pollChannelIndex_ = (pollChannelIndex_ + 1U) % channels_.size();
+    }
+
     static bool parsePositiveNumber(const String& value, uint16_t& number) {
         if (value.isEmpty()) return false;
         uint32_t parsed = 0;
@@ -339,9 +429,14 @@ private:
     ModbusMode mode_ = ModbusMode::Disabled;
     bool active_ = false;
     modbus::Rs485SerialSettings rs485Settings_;
+    modbus::ModbusMasterSettings masterSettings_;
     modbus::RtuSerialConfig serialConfig_;
     modbus::ModbusRtuMaster rtuMaster_;
     std::vector<modbus::ChannelConfig> channels_;
+    PollCache cache_[modbus::kCompatibilitySlotCount];
+    size_t pollChannelIndex_ = 0;
+    uint8_t pollRetryCount_ = 0;
+    uint32_t nextPollAtMs_ = 0;
 };
 
 class GnssComponent final : public Component, public DataSource {
