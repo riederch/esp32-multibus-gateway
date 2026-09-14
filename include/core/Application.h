@@ -12,7 +12,8 @@
 #include "SecurityStore.h"
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
-#include "lorawan/FPort85ModbusUplink.h"
+#include "lorawan/FPort85ReportScheduler.h"
+#include "lorawan/FPort85ReportSettingsStore.h"
 #include "modbus/ModbusChannelStore.h"
 #include "modbus/ModbusMasterSettingsStore.h"
 #include "modbus/Rs485SettingsStore.h"
@@ -39,6 +40,10 @@ public:
         }
         if (!modbusMasterSettingsStore_.begin()) {
             Serial.println("Failed to open Modbus master settings store.");
+            return false;
+        }
+        if (!reportSettingsStore_.begin()) {
+            Serial.println("Failed to open FPort 85 report settings store.");
             return false;
         }
 
@@ -93,6 +98,10 @@ public:
             Serial.println("Failed to load persisted Modbus master settings.");
             return false;
         }
+        if (!loadReportSettings()) {
+            Serial.println("Failed to load persisted FPort 85 report settings.");
+            return false;
+        }
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -132,7 +141,8 @@ public:
         victron_.loop();
         lora_.loop();
         modbus_.loop();
-        processModbusCompatibilityUplink();
+        captureModbusCompatibilitySample();
+        processModbusCompatibilityReport();
         gnss_.loop();
     }
 
@@ -145,6 +155,7 @@ public:
 
 private:
     enum class ParsedCommandKind : uint8_t {
+        ReportInterval,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -152,6 +163,7 @@ private:
 
     struct ParsedCommand {
         ParsedCommandKind kind = ParsedCommandKind::ModbusChannel;
+        lorawan::ReportIntervalCommand reportInterval;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -172,40 +184,60 @@ private:
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
     }
 
-    void processModbusCompatibilityUplink() {
+    void captureModbusCompatibilitySample() {
         ModbusComponent::PollCompletion completion;
         if (!modbus_.takeCompletedPoll(completion)) return;
+        reportScheduler_.recordPoll(
+            completion.channel,
+            completion.success,
+            completion.values,
+            completion.valueCount);
+    }
 
-        uint8_t payload[32] = {0};
+    void processModbusCompatibilityReport() {
+        if (config_.components.lora != LoRaMode::LoRaWAN || !lora_.active()) return;
+
+        uint8_t payload[lorawan::kCompatibilityReportPayloadLimit] = {0};
         size_t written = 0;
-        const lorawan::EncodeStatus status = completion.success
-            ? lorawan::FPort85ModbusUplink::encodePollSuccess(
-                  completion.channel,
-                  completion.values,
-                  completion.valueCount,
-                  payload,
-                  sizeof(payload),
-                  written)
-            : lorawan::FPort85ModbusUplink::encodePollFailure(
-                  completion.channel,
-                  payload,
-                  sizeof(payload),
-                  written);
+        const uint32_t now = millis();
+        const lorawan::ReportBuildStatus status = reportScheduler_.preparePacket(
+            now,
+            payload,
+            sizeof(payload),
+            written);
 
-        if (status != lorawan::EncodeStatus::Ok || written == 0) {
+        switch (status) {
+            case lorawan::ReportBuildStatus::NotDue:
+            case lorawan::ReportBuildStatus::EmptyReport:
+                return;
+            case lorawan::ReportBuildStatus::EncodeError:
+            case lorawan::ReportBuildStatus::BufferTooSmall:
+                ++compatibilityUplinkEncodeFailures_;
+                reportScheduler_.abortReport();
+                return;
+            case lorawan::ReportBuildStatus::PacketReady:
+                break;
+        }
+
+        if (written == 0) {
             ++compatibilityUplinkEncodeFailures_;
+            reportScheduler_.abortReport();
             return;
         }
 
         ++compatibilityUplinksBuilt_;
-        if (config_.components.lora != LoRaMode::LoRaWAN || !lora_.active()) return;
-
         TransportEnvelope envelope;
         envelope.endpoint = lorawan::kCompatibilityFPort;
         envelope.payload = payload;
         envelope.length = written;
         envelope.confirmed = false;
-        if (!lora_.send(envelope)) ++compatibilityUplinkSendFailures_;
+
+        if (lora_.send(envelope)) {
+            reportScheduler_.markPacketSent(now);
+        } else {
+            ++compatibilityUplinkSendFailures_;
+            reportScheduler_.markPacketFailed(now);
+        }
     }
 
     bool handleLoRaDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
@@ -221,7 +253,14 @@ private:
             size_t consumed = 0;
 
             if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
-                header.type == lorawan::FPort85Codec::kModbusChannelConfigType) {
+                header.type == lorawan::FPort85Codec::kReportIntervalType) {
+                parsed.kind = ParsedCommandKind::ReportInterval;
+                if (!lorawan::decodeReportIntervalCommand(
+                        payload + offset, length - offset, parsed.reportInterval, consumed) || consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kModbusChannelConfigType) {
                 parsed.kind = ParsedCommandKind::ModbusChannel;
                 if (lorawan::FPort85Codec::decodeModbusChannelCommand(
                         payload + offset, length - offset, parsed.modbusChannel, consumed) != lorawan::DecodeStatus::Ok ||
@@ -256,6 +295,9 @@ private:
 
         for (const auto& command : commands) {
             switch (command.kind) {
+                case ParsedCommandKind::ReportInterval:
+                    if (!applyReportIntervalCommand(command.reportInterval)) return false;
+                    break;
                 case ParsedCommandKind::ModbusChannel:
                     if (!applyModbusChannelCommand(command.modbusChannel)) return false;
                     break;
@@ -268,6 +310,17 @@ private:
             }
         }
         return true;
+    }
+
+    bool applyReportIntervalCommand(const lorawan::ReportIntervalCommand& command) {
+        if (!lorawan::validReportIntervalSettings(command.settings)) return false;
+
+        const lorawan::ReportIntervalSettings previous = reportScheduler_.settings();
+        if (!reportSettingsStore_.save(command.settings)) return false;
+        if (reportScheduler_.applySettings(command.settings, millis())) return true;
+
+        reportSettingsStore_.save(previous);
+        return false;
     }
 
     bool applyRs485SettingsCommand(const lorawan::Rs485SettingsCommand& command) {
@@ -297,11 +350,13 @@ private:
             case lorawan::ModbusChannelOperation::Upsert:
                 if (!modbusChannelStore_.save(command.channel)) return false;
                 if (!modbus_.upsertChannel(command.channel)) return false;
+                reportScheduler_.clearSlot(command.channel.slot);
                 return bindCompatibilityChannel(command.channel);
 
             case lorawan::ModbusChannelOperation::Remove:
                 if (!modbusChannelStore_.remove(command.channel.slot)) return false;
                 modbus_.removeChannel(command.channel.slot);
+                reportScheduler_.clearSlot(command.channel.slot);
                 channels_.removeCompatibilitySlot(command.channel.slot);
                 return true;
 
@@ -328,6 +383,13 @@ private:
         modbus::ModbusMasterSettings settings;
         if (!modbusMasterSettingsStore_.load(settings)) return false;
         return modbus_.applyModbusMasterSettings(settings);
+    }
+
+    bool loadReportSettings() {
+        lorawan::ReportIntervalSettings settings;
+        if (!reportSettingsStore_.load(settings)) return false;
+        reportScheduler_.begin(settings, millis());
+        return true;
     }
 
     bool loadModbusChannels() {
@@ -392,6 +454,8 @@ private:
         Serial.printf("  JoinEUI: %s\n", config_.lorawan.joinEui.c_str());
         Serial.printf("  LoRaWAN provisioned: %s\n", lora_.provisioned() ? "yes" : "no");
         Serial.printf("  Compatibility channels: %u\n", static_cast<unsigned>(channels_.size()));
+        Serial.printf("  Compatibility report interval: %u s\n",
+                      static_cast<unsigned>(reportScheduler_.settings().seconds));
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
@@ -422,6 +486,8 @@ private:
     modbus::ModbusChannelStore modbusChannelStore_;
     modbus::Rs485SettingsStore rs485SettingsStore_;
     modbus::ModbusMasterSettingsStore modbusMasterSettingsStore_;
+    lorawan::FPort85ReportSettingsStore reportSettingsStore_;
+    lorawan::FPort85ReportScheduler reportScheduler_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;
