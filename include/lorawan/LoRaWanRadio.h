@@ -33,6 +33,7 @@ public:
         radioReady_ = false;
         persistenceHealthy_ = false;
         lastState_ = RADIOLIB_ERR_NONE;
+        lastClassCState_ = RADIOLIB_ERR_NONE;
 
         if (!provisioned_) return false;
         if (!stateStore_.begin()) return false;
@@ -87,8 +88,6 @@ public:
         if (hasNonces) {
             lastState_ = node_.setBufferNonces(persistedNonces);
             if (lastState_ != RADIOLIB_ERR_NONE) {
-                // Never continue with reset/corrupt DevNonce state: doing so can
-                // cause an OTAA nonce reuse after reboot.
                 return false;
             }
         }
@@ -100,13 +99,13 @@ public:
                 if (lastState_ == RADIOLIB_LORAWAN_SESSION_RESTORED) {
                     joined_ = true;
                     persistenceHealthy_ = true;
+                    if (!applyConfiguredClass()) return false;
+                    if (!persistSession()) return false;
                     return true;
                 }
                 return false;
             }
 
-            // The nonce state is still authoritative, but a malformed/stale
-            // session may be discarded and replaced by a fresh OTAA session.
             if (!stateStore_.clearSession(stateIdentity_)) return false;
             node_.clearSession();
         }
@@ -117,7 +116,13 @@ public:
     }
 
     void loop() {
-        if (!radioReady_ || !provisioned_ || !persistenceHealthy_ || joined_) return;
+        if (!radioReady_ || !provisioned_ || !persistenceHealthy_) return;
+
+        if (joined_) {
+            if (config_.classC) pollClassCDownlink();
+            return;
+        }
+
         const uint32_t now = millis();
         if (static_cast<int32_t>(now - nextJoinAtMs_) < 0) return;
         tryJoin();
@@ -144,13 +149,7 @@ public:
             &uplinkDetails,
             &downlinkDetails);
 
-        // The session buffer contains frame counters and MAC/session state.
-        // Persist only when RadioLib's serialized state actually changed, which
-        // avoids redundant NVS writes when duty-cycle handling rejects a send.
-        if (!stateStore_.saveSessionIfChanged(stateIdentity_, node_.getBufferSession())) {
-            persistenceHealthy_ = false;
-            return false;
-        }
+        if (!persistSession()) return false;
 
         if (lastState_ < RADIOLIB_ERR_NONE) {
             if (lastState_ == RADIOLIB_ERR_NETWORK_NOT_JOINED ||
@@ -166,17 +165,17 @@ public:
             return false;
         }
 
-        if (downlinkSize > 0 && downlinkHandler_ != nullptr && downlinkDetails.fPort > 0) {
-            downlinkHandler_(downlinkContext_, downlinkDetails.fPort, downlink, downlinkSize);
-        }
+        dispatchApplicationDownlink(downlinkDetails, downlink, downlinkSize);
         return true;
     }
 
     bool provisioned() const { return provisioned_; }
     bool radioReady() const { return radioReady_; }
     bool joined() const { return joined_; }
+    bool classCActive() const { return joined_ && config_.classC; }
     bool persistenceHealthy() const { return persistenceHealthy_; }
     int16_t lastState() const { return lastState_; }
+    int16_t lastClassCState() const { return lastClassCState_; }
     uint32_t devAddr() const { return joined_ ? node_.getDevAddr() : 0; }
 
 private:
@@ -222,10 +221,55 @@ private:
                parseKey(config_.appKey, appKey_);
     }
 
+    bool persistSession() {
+        if (!stateStore_.saveSessionIfChanged(stateIdentity_, node_.getBufferSession())) {
+            persistenceHealthy_ = false;
+            return false;
+        }
+        return true;
+    }
+
     bool persistJoinState() {
         if (!stateStore_.saveNonces(stateIdentity_, node_.getBufferNonces())) return false;
         if (joined_ && !stateStore_.saveSessionIfChanged(stateIdentity_, node_.getBufferSession())) return false;
         return true;
+    }
+
+    bool applyConfiguredClass() {
+        if (!joined_) return false;
+        const uint8_t targetClass = config_.classC
+            ? RADIOLIB_LORAWAN_CLASS_C
+            : RADIOLIB_LORAWAN_CLASS_A;
+        lastState_ = node_.setClass(targetClass);
+        if (lastState_ != RADIOLIB_ERR_NONE) {
+            joined_ = false;
+            return false;
+        }
+        return true;
+    }
+
+    void dispatchApplicationDownlink(const LoRaWANEvent_t& event,
+                                     const uint8_t* payload,
+                                     size_t length) {
+        if (length == 0 || payload == nullptr || downlinkHandler_ == nullptr || event.fPort == 0) return;
+        downlinkHandler_(downlinkContext_, event.fPort, payload, length);
+    }
+
+    void pollClassCDownlink() {
+        uint8_t downlink[242];
+        size_t downlinkSize = 0;
+        LoRaWANEvent_t downlinkDetails;
+        lastClassCState_ = node_.getDownlinkClassC(downlink, &downlinkSize, &downlinkDetails);
+
+        if (lastClassCState_ <= RADIOLIB_ERR_NONE) {
+            // Class C continuously listens and can see unrelated/spurious RF.
+            // RadioLib may therefore return parse/MIC errors here; they do not
+            // invalidate the active LoRaWAN session.
+            return;
+        }
+
+        if (!persistSession()) return;
+        dispatchApplicationDownlink(downlinkDetails, downlink, downlinkSize);
     }
 
     bool tryJoin() {
@@ -235,8 +279,13 @@ private:
         joined_ = lastState_ == RADIOLIB_LORAWAN_NEW_SESSION ||
                   lastState_ == RADIOLIB_LORAWAN_SESSION_RESTORED;
 
-        // DevNonce changes on every OTAA attempt, successful or not. Commit the
-        // nonce buffer immediately so an unexpected reset cannot reuse it.
+        if (joined_ && !applyConfiguredClass()) {
+            nextJoinAtMs_ = millis() + kJoinRetryMs;
+        }
+
+        // DevNonce changes on every OTAA attempt, successful or not. Class is
+        // applied before persisting a new session so the restored session comes
+        // back in the configured operating class after reboot.
         if (!persistJoinState()) {
             persistenceHealthy_ = false;
             joined_ = false;
@@ -272,6 +321,7 @@ private:
     bool joined_ = false;
     bool persistenceHealthy_ = false;
     int16_t lastState_ = RADIOLIB_ERR_NONE;
+    int16_t lastClassCState_ = RADIOLIB_ERR_NONE;
     uint32_t nextJoinAtMs_ = 0;
 };
 
