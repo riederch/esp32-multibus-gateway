@@ -74,7 +74,10 @@ public:
         node_.setADR(true);
         node_.setDutyCycle(true, 0);
 
-        return tryJoin();
+        // A missing gateway or temporarily unavailable network must not make
+        // the radio component fail startup. loop() retries OTAA every minute.
+        tryJoin();
+        return true;
     }
 
     void loop() {
@@ -96,7 +99,7 @@ public:
         LoRaWANEvent_t downlinkDetails;
 
         lastState_ = node_.sendReceive(
-            const_cast<uint8_t*>(envelope.payload),
+            envelope.payload,
             envelope.length,
             envelope.endpoint,
             downlink,
