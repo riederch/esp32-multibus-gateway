@@ -33,8 +33,6 @@ public:
 
         if (!provisioned_) return false;
 
-        // V4.2 GC1109 front-end power must be present before SX1262 reset and
-        // image calibration. GPIO46 is the PA mode input and starts in RX/bypass.
         pinMode(board::LORA_FEM_POWER, OUTPUT);
         pinMode(board::LORA_FEM_ENABLE, OUTPUT);
         pinMode(board::LORA_FEM_PA, OUTPUT);
@@ -59,7 +57,6 @@ public:
         };
         radio_.setRfSwitchTable(rfSwitchPins, rfSwitchTable);
 
-        // Heltec V4.x uses a 1.8-V TCXO controlled by SX1262 DIO3.
         radio_.tcxoVoltage = 1.8f;
         ConfigLoRa_t radioConfig;
         radioConfig.frequency = 868.0f;
@@ -74,8 +71,6 @@ public:
         node_.setADR(true);
         node_.setDutyCycle(true, 0);
 
-        // A missing gateway or temporarily unavailable network must not make
-        // the radio component fail startup. loop() retries OTAA every minute.
         tryJoin();
         return true;
     }
@@ -127,7 +122,7 @@ public:
     bool radioReady() const { return radioReady_; }
     bool joined() const { return joined_; }
     int16_t lastState() const { return lastState_; }
-    uint32_t devAddr() { return joined_ ? node_.getDevAddr() : 0; }
+    uint32_t devAddr() const { return joined_ ? node_.getDevAddr() : 0; }
 
 private:
     static constexpr uint32_t kJoinRetryMs = 60000UL;
@@ -195,7 +190,7 @@ private:
         SPI,
         RADIOLIB_DEFAULT_SPI_SETTINGS};
     SX1262 radio_{&module_};
-    LoRaWANNode node_{&radio_, &EU868, 0};
+    mutable LoRaWANNode node_{&radio_, &EU868, 0};
 
     DownlinkHandler downlinkHandler_ = nullptr;
     void* downlinkContext_ = nullptr;
