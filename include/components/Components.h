@@ -107,6 +107,16 @@ private:
 
 class ModbusComponent final : public Component, public DataSource {
 public:
+    struct PollCompletion {
+        modbus::ChannelConfig channel;
+        bool success = false;
+        uint8_t valueCount = 0;
+        modbus::DecodedScalar values[2];
+        modbus::RtuDecodeStatus status = modbus::RtuDecodeStatus::Truncated;
+        uint8_t exceptionCode = 0;
+        uint32_t completedAtMs = 0;
+    };
+
     void setMode(ModbusMode mode) {
         mode_ = mode;
         active_ = false;
@@ -201,6 +211,7 @@ public:
             if (it->slot == slot) {
                 channels_.erase(it);
                 cache_[slot] = PollCache{};
+                if (pollCompletionPending_ && completedPoll_.channel.slot == slot) pollCompletionPending_ = false;
                 if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
                 pollRetryCount_ = 0;
                 return true;
@@ -260,6 +271,7 @@ public:
             cached.updatedAtMs = millis();
             cached.lastStatus = modbus::RtuDecodeStatus::Ok;
             cached.lastExceptionCode = 0;
+            publishPollCompletion(channel, true, values, valueCount);
             pollRetryCount_ = 0;
             advancePollChannel();
         } else if (pollRetryCount_ < masterSettings_.maxRetryTimes) {
@@ -271,11 +283,19 @@ public:
             cached.valueCount = 0;
             cached.lastStatus = rtuMaster_.lastStatus();
             cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
+            publishPollCompletion(channel, false, nullptr, 0);
             pollRetryCount_ = 0;
             advancePollChannel();
         }
 
         nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
+    }
+
+    bool takeCompletedPoll(PollCompletion& completion) {
+        if (!pollCompletionPending_) return false;
+        completion = completedPoll_;
+        pollCompletionPending_ = false;
+        return true;
     }
 
     bool active() const { return active_; }
@@ -376,6 +396,24 @@ private:
         uint8_t lastExceptionCode = 0;
     };
 
+    void publishPollCompletion(const modbus::ChannelConfig& channel,
+                               bool success,
+                               const modbus::DecodedScalar* values,
+                               uint8_t valueCount) {
+        completedPoll_ = PollCompletion{};
+        completedPoll_.channel = channel;
+        completedPoll_.success = success;
+        completedPoll_.valueCount = success ? valueCount : 0;
+        if (success && values != nullptr && valueCount > 0) {
+            completedPoll_.values[0] = values[0];
+            if (valueCount > 1) completedPoll_.values[1] = values[1];
+        }
+        completedPoll_.status = success ? modbus::RtuDecodeStatus::Ok : rtuMaster_.lastStatus();
+        completedPoll_.exceptionCode = success ? 0 : rtuMaster_.lastExceptionCode();
+        completedPoll_.completedAtMs = millis();
+        pollCompletionPending_ = true;
+    }
+
     void advancePollChannel() {
         if (channels_.empty()) {
             pollChannelIndex_ = 0;
@@ -434,6 +472,8 @@ private:
     modbus::ModbusRtuMaster rtuMaster_;
     std::vector<modbus::ChannelConfig> channels_;
     PollCache cache_[modbus::kCompatibilitySlotCount];
+    PollCompletion completedPoll_;
+    bool pollCompletionPending_ = false;
     size_t pollChannelIndex_ = 0;
     uint8_t pollRetryCount_ = 0;
     uint32_t nextPollAtMs_ = 0;

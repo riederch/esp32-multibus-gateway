@@ -12,6 +12,7 @@
 #include "SecurityStore.h"
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
+#include "lorawan/FPort85ModbusUplink.h"
 #include "modbus/ModbusChannelStore.h"
 #include "modbus/ModbusMasterSettingsStore.h"
 #include "modbus/Rs485SettingsStore.h"
@@ -131,6 +132,7 @@ public:
         victron_.loop();
         lora_.loop();
         modbus_.loop();
+        processModbusCompatibilityUplink();
         gnss_.loop();
     }
 
@@ -168,6 +170,42 @@ private:
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
+    }
+
+    void processModbusCompatibilityUplink() {
+        ModbusComponent::PollCompletion completion;
+        if (!modbus_.takeCompletedPoll(completion)) return;
+
+        uint8_t payload[32] = {0};
+        size_t written = 0;
+        const lorawan::EncodeStatus status = completion.success
+            ? lorawan::FPort85ModbusUplink::encodePollSuccess(
+                  completion.channel,
+                  completion.values,
+                  completion.valueCount,
+                  payload,
+                  sizeof(payload),
+                  written)
+            : lorawan::FPort85ModbusUplink::encodePollFailure(
+                  completion.channel,
+                  payload,
+                  sizeof(payload),
+                  written);
+
+        if (status != lorawan::EncodeStatus::Ok || written == 0) {
+            ++compatibilityUplinkEncodeFailures_;
+            return;
+        }
+
+        ++compatibilityUplinksBuilt_;
+        if (config_.components.lora != LoRaMode::LoRaWAN || !lora_.active()) return;
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+        if (!lora_.send(envelope)) ++compatibilityUplinkSendFailures_;
     }
 
     bool handleLoRaDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
@@ -392,6 +430,9 @@ private:
     LoRaComponent lora_;
     ModbusComponent modbus_;
     GnssComponent gnss_;
+    uint32_t compatibilityUplinksBuilt_ = 0;
+    uint32_t compatibilityUplinkEncodeFailures_ = 0;
+    uint32_t compatibilityUplinkSendFailures_ = 0;
 };
 
 } // namespace multibus
