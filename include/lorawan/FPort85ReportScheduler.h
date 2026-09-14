@@ -58,6 +58,7 @@ public:
     void clearSlot(uint8_t slot) {
         if (slot >= modbus::kCompatibilitySlotCount) return;
         samples_[slot] = Sample{};
+        reportSamples_[slot] = Sample{};
     }
 
     ReportBuildStatus preparePacket(uint32_t nowMs,
@@ -78,6 +79,7 @@ public:
 
         if (!reportInProgress_) {
             if (static_cast<int32_t>(nowMs - nextReportAtMs_) < 0) return ReportBuildStatus::NotDue;
+            memcpy(reportSamples_, samples_, sizeof(samples_));
             reportInProgress_ = true;
             cursor_ = 0;
             nextReportAtMs_ = nowMs + intervalMs();
@@ -86,7 +88,7 @@ public:
         size_t length = 0;
         uint8_t scan = cursor_;
         while (scan < modbus::kCompatibilitySlotCount) {
-            const Sample& sample = samples_[scan];
+            const Sample& sample = reportSamples_[scan];
             if (!sample.present) {
                 ++scan;
                 continue;
@@ -178,6 +180,7 @@ private:
 
     ReportIntervalSettings settings_;
     Sample samples_[modbus::kCompatibilitySlotCount];
+    Sample reportSamples_[modbus::kCompatibilitySlotCount];
     uint32_t nextReportAtMs_ = 0;
     uint32_t retryAtMs_ = 0;
     uint8_t cursor_ = 0;
