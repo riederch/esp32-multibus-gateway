@@ -10,7 +10,9 @@ using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
+using multibus::lorawan::ModbusMasterSettingsCommand;
 using multibus::lorawan::Rs485SettingsCommand;
+using multibus::modbus::PassThroughMode;
 using multibus::modbus::Rs485Parity;
 using multibus::modbus::Rs485StopBits;
 using multibus::modbus::WireDataType;
@@ -44,6 +46,41 @@ static void testRs485SettingsRejectsUnknownBaud() {
     Rs485SettingsCommand command;
     size_t consumed = 0;
     assert(FPort85Codec::decodeRs485SettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
+static void testModbusMasterSettingsReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x79, 0x32, 0x00, 0x60, 0xea, 0x03, 0x10, 0x05};
+    ModbusMasterSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeModbusMasterSettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.settings.executionIntervalMs == 50);
+    assert(command.settings.maxResponseTimeMs == 60000);
+    assert(command.settings.maxRetryTimes == 3);
+    assert(command.settings.passThroughMode == PassThroughMode::Active);
+    assert(command.settings.passThroughPort == 5);
+    assert(!multibus::modbus::runtimeSupportsModbusMasterSettings(command.settings));
+}
+
+static void testModbusMasterSettingsDefaultsAreRuntimeSupported() {
+    const uint8_t payload[] = {0xf9, 0x79, 0x32, 0x00, 0xf4, 0x01, 0x03, 0x00, 0x02};
+    ModbusMasterSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeModbusMasterSettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.settings.executionIntervalMs == 50);
+    assert(command.settings.maxResponseTimeMs == 500);
+    assert(command.settings.maxRetryTimes == 3);
+    assert(command.settings.passThroughMode == PassThroughMode::Disabled);
+    assert(command.settings.passThroughPort == 2);
+    assert(multibus::modbus::runtimeSupportsModbusMasterSettings(command.settings));
+}
+
+static void testModbusMasterSettingsRejectsInvalidInterval() {
+    const uint8_t payload[] = {0xf9, 0x79, 0x09, 0x00, 0xf4, 0x01, 0x03, 0x00, 0x02};
+    ModbusMasterSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeModbusMasterSettingsCommand(payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
     assert(consumed == 0);
 }
 
@@ -126,7 +163,7 @@ static void testFloatUsesSignedUplinkType() {
     assert(written == 8);
     assert(encoded[0] == 0xf9 && encoded[1] == 0x73);
     assert(encoded[2] == 0x00);
-    assert(encoded[3] == 0x87); // signed + first register + Input_float
+    assert(encoded[3] == 0x87);
 }
 
 static void testCollectionException() {
@@ -142,6 +179,9 @@ int main() {
     testRs485SettingsReferenceVector();
     testRs485SettingsAcceptsProtocolValues();
     testRs485SettingsRejectsUnknownBaud();
+    testModbusMasterSettingsReferenceVector();
+    testModbusMasterSettingsDefaultsAreRuntimeSupported();
+    testModbusMasterSettingsRejectsInvalidInterval();
     testAddChannelReferenceVector();
     testAddressAndSignedQuantityAreLittleEndian();
     testNameReferenceVector();

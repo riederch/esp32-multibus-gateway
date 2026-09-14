@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "modbus/ModbusChannel.h"
+#include "modbus/ModbusMasterSettings.h"
 #include "modbus/Rs485Settings.h"
 
 namespace multibus {
@@ -42,6 +43,10 @@ struct ModbusChannelCommand {
 
 struct Rs485SettingsCommand {
     modbus::Rs485SerialSettings settings;
+};
+
+struct ModbusMasterSettingsCommand {
+    modbus::ModbusMasterSettings settings;
 };
 
 struct PeriodicValue {
@@ -106,6 +111,32 @@ public:
         if (!modbus::validRs485SerialSettings(settings)) return DecodeStatus::Invalid;
 
         command = Rs485SettingsCommand{};
+        command.settings = settings;
+        consumed = 9;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeModbusMasterSettingsCommand(const uint8_t* payload,
+                                                           size_t length,
+                                                           ModbusMasterSettingsCommand& command,
+                                                           size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 9) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kModbusGlobalConfigType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        modbus::ModbusMasterSettings settings;
+        settings.executionIntervalMs = static_cast<uint16_t>(payload[2]) |
+                                       (static_cast<uint16_t>(payload[3]) << 8U);
+        settings.maxResponseTimeMs = static_cast<uint16_t>(payload[4]) |
+                                     (static_cast<uint16_t>(payload[5]) << 8U);
+        settings.maxRetryTimes = payload[6];
+        settings.passThroughMode = static_cast<modbus::PassThroughMode>(payload[7]);
+        settings.passThroughPort = payload[8];
+        if (!modbus::validModbusMasterSettings(settings)) return DecodeStatus::Invalid;
+
+        command = ModbusMasterSettingsCommand{};
         command.settings = settings;
         consumed = 9;
         return DecodeStatus::Ok;
