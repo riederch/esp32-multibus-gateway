@@ -8,6 +8,7 @@
 #include "core/DeviceConfig.h"
 #include "core/LoRaWanIdentity.h"
 #include "core/Transport.h"
+#include "lorawan/LoRaWanStateStore.h"
 
 namespace multibus::lorawan {
 
@@ -18,6 +19,7 @@ public:
     void configure(const LoRaWanConfig& config, const String& devEui) {
         config_ = config;
         devEuiText_ = devEui;
+        stateIdentity_ = LoRaWanStateStore::identityFingerprint(config_, devEuiText_);
         provisioned_ = parseProvisioning();
     }
 
@@ -29,9 +31,11 @@ public:
     bool begin() {
         joined_ = false;
         radioReady_ = false;
+        persistenceHealthy_ = false;
         lastState_ = RADIOLIB_ERR_NONE;
 
         if (!provisioned_) return false;
+        if (!stateStore_.begin()) return false;
 
         pinMode(board::LORA_FEM_POWER, OUTPUT);
         pinMode(board::LORA_FEM_ENABLE, OUTPUT);
@@ -71,19 +75,56 @@ public:
         node_.setADR(true);
         node_.setDutyCycle(true, 0);
 
+        uint8_t persistedNonces[RADIOLIB_LORAWAN_NONCES_BUF_SIZE] = {0};
+        uint8_t persistedSession[RADIOLIB_LORAWAN_SESSION_BUF_SIZE] = {0};
+        bool hasNonces = false;
+        bool hasSession = false;
+        if (!stateStore_.load(
+                stateIdentity_, persistedNonces, hasNonces, persistedSession, hasSession)) {
+            return false;
+        }
+
+        if (hasNonces) {
+            lastState_ = node_.setBufferNonces(persistedNonces);
+            if (lastState_ != RADIOLIB_ERR_NONE) {
+                // Never continue with reset/corrupt DevNonce state: doing so can
+                // cause an OTAA nonce reuse after reboot.
+                return false;
+            }
+        }
+
+        if (hasNonces && hasSession) {
+            lastState_ = node_.setBufferSession(persistedSession);
+            if (lastState_ == RADIOLIB_ERR_NONE) {
+                lastState_ = node_.activateOTAA();
+                if (lastState_ == RADIOLIB_LORAWAN_SESSION_RESTORED) {
+                    joined_ = true;
+                    persistenceHealthy_ = true;
+                    return true;
+                }
+                return false;
+            }
+
+            // The nonce state is still authoritative, but a malformed/stale
+            // session may be discarded and replaced by a fresh OTAA session.
+            if (!stateStore_.clearSession(stateIdentity_)) return false;
+            node_.clearSession();
+        }
+
+        persistenceHealthy_ = true;
         tryJoin();
-        return true;
+        return persistenceHealthy_;
     }
 
     void loop() {
-        if (!radioReady_ || !provisioned_ || joined_) return;
+        if (!radioReady_ || !provisioned_ || !persistenceHealthy_ || joined_) return;
         const uint32_t now = millis();
         if (static_cast<int32_t>(now - nextJoinAtMs_) < 0) return;
         tryJoin();
     }
 
     bool send(const TransportEnvelope& envelope) {
-        if (!joined_ || envelope.payload == nullptr || envelope.length == 0 ||
+        if (!joined_ || !persistenceHealthy_ || envelope.payload == nullptr || envelope.length == 0 ||
             envelope.endpoint == 0 || envelope.endpoint > 223 || envelope.length > 242) {
             return false;
         }
@@ -103,10 +144,23 @@ public:
             &uplinkDetails,
             &downlinkDetails);
 
+        // The session buffer contains frame counters and MAC/session state.
+        // Persist only when RadioLib's serialized state actually changed, which
+        // avoids redundant NVS writes when duty-cycle handling rejects a send.
+        if (!stateStore_.saveSessionIfChanged(stateIdentity_, node_.getBufferSession())) {
+            persistenceHealthy_ = false;
+            return false;
+        }
+
         if (lastState_ < RADIOLIB_ERR_NONE) {
             if (lastState_ == RADIOLIB_ERR_NETWORK_NOT_JOINED ||
                 lastState_ == RADIOLIB_ERR_SESSION_DISCARDED) {
                 joined_ = false;
+                node_.clearSession();
+                if (!stateStore_.clearSession(stateIdentity_)) {
+                    persistenceHealthy_ = false;
+                    return false;
+                }
                 nextJoinAtMs_ = millis() + kJoinRetryMs;
             }
             return false;
@@ -121,6 +175,7 @@ public:
     bool provisioned() const { return provisioned_; }
     bool radioReady() const { return radioReady_; }
     bool joined() const { return joined_; }
+    bool persistenceHealthy() const { return persistenceHealthy_; }
     int16_t lastState() const { return lastState_; }
     uint32_t devAddr() const { return joined_ ? node_.getDevAddr() : 0; }
 
@@ -167,11 +222,27 @@ private:
                parseKey(config_.appKey, appKey_);
     }
 
+    bool persistJoinState() {
+        if (!stateStore_.saveNonces(stateIdentity_, node_.getBufferNonces())) return false;
+        if (joined_ && !stateStore_.saveSessionIfChanged(stateIdentity_, node_.getBufferSession())) return false;
+        return true;
+    }
+
     bool tryJoin() {
-        if (!radioReady_ || !provisioned_) return false;
+        if (!radioReady_ || !provisioned_ || !persistenceHealthy_) return false;
+
         lastState_ = node_.activateOTAA();
         joined_ = lastState_ == RADIOLIB_LORAWAN_NEW_SESSION ||
                   lastState_ == RADIOLIB_LORAWAN_SESSION_RESTORED;
+
+        // DevNonce changes on every OTAA attempt, successful or not. Commit the
+        // nonce buffer immediately so an unexpected reset cannot reuse it.
+        if (!persistJoinState()) {
+            persistenceHealthy_ = false;
+            joined_ = false;
+            return false;
+        }
+
         if (!joined_) nextJoinAtMs_ = millis() + kJoinRetryMs;
         return joined_;
     }
@@ -181,6 +252,7 @@ private:
     uint64_t joinEui_ = 0;
     uint64_t devEui_ = 0;
     uint8_t appKey_[16] = {0};
+    uint32_t stateIdentity_ = 0;
 
     Module module_{
         static_cast<uint32_t>(board::LORA_NSS),
@@ -191,12 +263,14 @@ private:
         RADIOLIB_DEFAULT_SPI_SETTINGS};
     SX1262 radio_{&module_};
     mutable LoRaWANNode node_{&radio_, &EU868, 0};
+    LoRaWanStateStore stateStore_;
 
     DownlinkHandler downlinkHandler_ = nullptr;
     void* downlinkContext_ = nullptr;
     bool provisioned_ = false;
     bool radioReady_ = false;
     bool joined_ = false;
+    bool persistenceHealthy_ = false;
     int16_t lastState_ = RADIOLIB_ERR_NONE;
     uint32_t nextJoinAtMs_ = 0;
 };
