@@ -60,7 +60,7 @@ public:
             return false;
         }
 
-        if (!board_.begin(configStore_, security_)) {
+        if (!board_.begin(configStore_, security_, &Application::factoryResetThunk, this)) {
             Serial.println("Failed to initialize board service.");
             return false;
         }
@@ -143,6 +143,15 @@ private:
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
     };
+
+    static void factoryResetThunk(void* context) {
+        if (context != nullptr) static_cast<Application*>(context)->clearSubsystemStores();
+    }
+
+    void clearSubsystemStores() {
+        modbusChannelStore_.clear();
+        rs485SettingsStore_.clear();
+    }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
