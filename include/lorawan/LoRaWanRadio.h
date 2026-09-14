@@ -127,7 +127,7 @@ public:
     bool radioReady() const { return radioReady_; }
     bool joined() const { return joined_; }
     int16_t lastState() const { return lastState_; }
-    uint32_t devAddr() const { return joined_ ? node_.getDevAddr() : 0; }
+    uint32_t devAddr() { return joined_ ? node_.getDevAddr() : 0; }
 
 private:
     static constexpr uint32_t kJoinRetryMs = 60000UL;
