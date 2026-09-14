@@ -18,6 +18,13 @@ struct RtuSerialConfig {
     uint32_t interFrameDelayUs = 0;
 };
 
+enum class RtuTransactionResult : uint8_t {
+    Idle,
+    Pending,
+    Success,
+    Failure,
+};
+
 inline bool makeRtuSerialConfig(const Rs485SerialSettings& settings,
                                 RtuSerialConfig& config,
                                 uint32_t responseTimeoutMs = 500) {
@@ -77,6 +84,7 @@ public:
     }
 
     void end() {
+        cancelTransaction();
         if (started_) serial_.end();
         digitalWrite(board::MODBUS_DIR, LOW);
         started_ = false;
@@ -84,6 +92,7 @@ public:
 
     bool started() const { return started_; }
     bool online() const { return online_; }
+    bool transactionPending() const { return transactionActive_; }
     uint32_t successfulTransactions() const { return successfulTransactions_; }
     uint32_t failedTransactions() const { return failedTransactions_; }
     RtuDecodeStatus lastStatus() const { return lastStatus_; }
@@ -95,13 +104,11 @@ public:
         return begin(config);
     }
 
-    bool read(const ChannelConfig& channel,
-              DecodedScalar values[2],
-              uint8_t& valueCount) {
-        valueCount = 0;
+    bool startRead(const ChannelConfig& channel) {
         lastExceptionCode_ = 0;
-        if (!started_ || values == nullptr || !validChannelConfig(channel)) {
-            return fail(RtuDecodeStatus::InvalidConfig);
+        if (!started_ || transactionActive_ || !validChannelConfig(channel)) {
+            if (!transactionActive_) fail(RtuDecodeStatus::InvalidConfig);
+            return false;
         }
 
         uint8_t request[8] = {0};
@@ -122,51 +129,112 @@ public:
 
         if (sent != requestLength) return fail(RtuDecodeStatus::Truncated);
 
-        uint8_t response[32] = {0};
-        const size_t responseLength = receiveFrame(channel, response, sizeof(response));
-        if (responseLength == 0) return fail(RtuDecodeStatus::Truncated);
+        activeChannel_ = channel;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        transactionStartedAtMs_ = millis();
+        transactionActive_ = true;
+        return true;
+    }
 
+    RtuTransactionResult pollRead(DecodedScalar values[2], uint8_t& valueCount) {
+        valueCount = 0;
+        if (!transactionActive_) return RtuTransactionResult::Idle;
+        if (values == nullptr) {
+            finishFailure(RtuDecodeStatus::InvalidConfig);
+            return RtuTransactionResult::Failure;
+        }
+
+        while (serial_.available() > 0) {
+            const int raw = serial_.read();
+            if (raw < 0) break;
+            if (responseLength_ >= sizeof(response_)) {
+                finishFailure(RtuDecodeStatus::BufferTooSmall);
+                return RtuTransactionResult::Failure;
+            }
+
+            response_[responseLength_++] = static_cast<uint8_t>(raw);
+            if (responseLength_ == 2 && (response_[1] & 0x80U) != 0) {
+                expectedResponseLength_ = 5;
+            } else if (responseLength_ == 3 && (response_[1] & 0x80U) == 0) {
+                expectedResponseLength_ = static_cast<size_t>(response_[2]) + 5U;
+                if (expectedResponseLength_ > sizeof(response_)) {
+                    finishFailure(RtuDecodeStatus::BufferTooSmall);
+                    return RtuTransactionResult::Failure;
+                }
+            }
+
+            if (expectedResponseLength_ != 0 && responseLength_ >= expectedResponseLength_) {
+                return finishDecode(values, valueCount);
+            }
+        }
+
+        if (millis() - transactionStartedAtMs_ >= config_.responseTimeoutMs) {
+            if (responseLength_ == 0) {
+                finishFailure(RtuDecodeStatus::Truncated);
+                return RtuTransactionResult::Failure;
+            }
+            return finishDecode(values, valueCount);
+        }
+
+        return RtuTransactionResult::Pending;
+    }
+
+    void cancelTransaction() {
+        transactionActive_ = false;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        digitalWrite(board::MODBUS_DIR, LOW);
+        if (started_) drainReceiveBuffer();
+    }
+
+    // Compatibility helper for callers that still require a synchronous API.
+    // The component scheduler uses startRead()/pollRead() and never enters this loop.
+    bool read(const ChannelConfig& channel,
+              DecodedScalar values[2],
+              uint8_t& valueCount) {
+        valueCount = 0;
+        if (!startRead(channel)) return false;
+
+        while (true) {
+            const RtuTransactionResult result = pollRead(values, valueCount);
+            if (result == RtuTransactionResult::Success) return true;
+            if (result == RtuTransactionResult::Failure || result == RtuTransactionResult::Idle) return false;
+            delay(1);
+        }
+    }
+
+private:
+    RtuTransactionResult finishDecode(DecodedScalar values[2], uint8_t& valueCount) {
         uint8_t exceptionCode = 0;
         const RtuDecodeStatus status = ModbusRtuCodec::decodeReadResponse(
-            channel, response, responseLength, values, valueCount, exceptionCode);
+            activeChannel_,
+            response_,
+            responseLength_,
+            values,
+            valueCount,
+            exceptionCode);
         lastExceptionCode_ = exceptionCode;
-        if (status != RtuDecodeStatus::Ok) return fail(status);
+        transactionActive_ = false;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+
+        if (status != RtuDecodeStatus::Ok) {
+            fail(status);
+            return RtuTransactionResult::Failure;
+        }
 
         lastStatus_ = RtuDecodeStatus::Ok;
         online_ = true;
         ++successfulTransactions_;
-        return true;
+        return RtuTransactionResult::Success;
     }
 
-private:
-    size_t receiveFrame(const ChannelConfig& channel, uint8_t* buffer, size_t capacity) {
-        if (buffer == nullptr || capacity < 5) return 0;
-
-        const uint32_t startedAt = millis();
-        size_t length = 0;
-        size_t expectedLength = 0;
-
-        while (millis() - startedAt < config_.responseTimeoutMs) {
-            while (serial_.available() > 0) {
-                const int raw = serial_.read();
-                if (raw < 0) break;
-                if (length >= capacity) return length;
-                buffer[length++] = static_cast<uint8_t>(raw);
-
-                if (length == 2 && (buffer[1] & 0x80U) != 0) {
-                    expectedLength = 5;
-                } else if (length == 3 && (buffer[1] & 0x80U) == 0) {
-                    expectedLength = static_cast<size_t>(buffer[2]) + 5U;
-                    if (expectedLength > capacity) return length;
-                }
-
-                if (expectedLength != 0 && length >= expectedLength) return length;
-            }
-            delay(1);
-        }
-
-        (void)channel;
-        return length;
+    void finishFailure(RtuDecodeStatus status) {
+        transactionActive_ = false;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        fail(status);
     }
 
     void drainReceiveBuffer() {
@@ -206,6 +274,12 @@ private:
 
     HardwareSerial serial_;
     RtuSerialConfig config_;
+    ChannelConfig activeChannel_;
+    uint8_t response_[32] = {0};
+    size_t responseLength_ = 0;
+    size_t expectedResponseLength_ = 0;
+    uint32_t transactionStartedAtMs_ = 0;
+    bool transactionActive_ = false;
     bool started_ = false;
     bool online_ = false;
     uint32_t successfulTransactions_ = 0;
