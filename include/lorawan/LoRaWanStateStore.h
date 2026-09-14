@@ -78,8 +78,15 @@ public:
         return true;
     }
 
-    void invalidateSessionCache() {
+    bool clearSession(uint32_t identity) {
+        if (!open_) return false;
+        if (prefs_.getUInt(kIdentityKey, 0) != identity) {
+            lastSessionValid_ = false;
+            return true;
+        }
+        if (prefs_.isKey(kSessionKey) && !prefs_.remove(kSessionKey)) return false;
         lastSessionValid_ = false;
+        return true;
     }
 
 private:
@@ -110,8 +117,6 @@ private:
         const uint32_t stored = prefs_.getUInt(kIdentityKey, 0);
         if (stored == identity) return true;
 
-        // Credentials changed (or this is the first use). Remove stale protocol
-        // state before binding this NVS record to the current provisioning.
         prefs_.remove(kNoncesKey);
         prefs_.remove(kSessionKey);
         lastSessionValid_ = false;
