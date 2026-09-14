@@ -9,6 +9,7 @@
 #include "core/DeviceConfig.h"
 #include "core/LoRaWanIdentity.h"
 #include "core/Transport.h"
+#include "lorawan/LoRaWanRadio.h"
 #include "modbus/ModbusChannel.h"
 #include "modbus/ModbusMasterSettings.h"
 #include "modbus/ModbusRtuMaster.h"
@@ -47,23 +48,18 @@ private:
 
 class LoRaComponent final : public Component, public Transport {
 public:
-    using DownlinkHandler = bool (*)(void* context, uint8_t fport, const uint8_t* payload, size_t length);
+    using DownlinkHandler = lorawan::LoRaWanRadio::DownlinkHandler;
 
     void setMode(LoRaMode mode) { mode_ = mode; active_ = false; }
 
     void setProvisioning(const LoRaWanConfig& config, const String& devEuiValue) {
         lorawan_ = config;
         devEui_ = devEuiValue;
+        radio_.configure(lorawan_, devEui_);
     }
 
     void setDownlinkHandler(DownlinkHandler handler, void* context) {
-        downlinkHandler_ = handler;
-        downlinkContext_ = context;
-    }
-
-    bool dispatchDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
-        if (!active_ || downlinkHandler_ == nullptr || payload == nullptr || length == 0) return false;
-        return downlinkHandler_(downlinkContext_, fport, payload, length);
+        radio_.setDownlinkHandler(handler, context);
     }
 
     const char* name() const override { return "lora"; }
@@ -80,27 +76,33 @@ public:
         capabilities.add("lora.compat.fport85");
         capabilities.add("lora.extensions");
         capabilities.add("lora.otaa");
+        capabilities.add("lora.eu868");
+        capabilities.add("lora.sx1262");
 
-        active_ = true;
-        provisioned_ = isHexString(devEui_, 16) && validateLoRaWanConfig(lorawan_);
-        return true;
+        provisioned_ = radio_.provisioned();
+        if (!provisioned_) return false;
+        active_ = radio_.begin();
+        return active_;
     }
 
-    void loop() override {}
+    void loop() override { radio_.loop(); }
     bool active() const { return active_; }
     bool provisioned() const { return provisioned_; }
-    bool connected() const override { return false; }
-    bool send(const TransportEnvelope&) override { return false; }
+    bool connected() const override { return active_ && radio_.joined(); }
+    bool send(const TransportEnvelope& envelope) override {
+        return active_ && radio_.send(envelope);
+    }
 
     const String& devEuiValue() const { return devEui_; }
     const LoRaWanConfig& provisioning() const { return lorawan_; }
+    int16_t lastState() const { return radio_.lastState(); }
+    uint32_t devAddr() const { return radio_.devAddr(); }
 
 private:
     LoRaMode mode_ = LoRaMode::Disabled;
     LoRaWanConfig lorawan_;
     String devEui_;
-    DownlinkHandler downlinkHandler_ = nullptr;
-    void* downlinkContext_ = nullptr;
+    lorawan::LoRaWanRadio radio_;
     bool active_ = false;
     bool provisioned_ = false;
 };

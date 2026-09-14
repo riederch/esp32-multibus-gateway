@@ -29,13 +29,20 @@ constexpr int LORA_MISO = 11;
 constexpr int LORA_RST = 12;
 constexpr int LORA_BUSY = 13;
 constexpr int LORA_DIO1 = 14;
-constexpr int LORA_VFEM_CTRL = 7;
+
+// Heltec V4.2 GC1109 front-end module. These GPIOs are onboard radio resources
+// and must never be allocated to carrier peripherals.
+constexpr int LORA_FEM_POWER = 7;
+constexpr int LORA_FEM_ENABLE = 2;
+constexpr int LORA_FEM_PA = 46;
 
 constexpr int USB_DM = 19;
 constexpr int USB_DP = 20;
 
 // Rev-A carrier field-bus allocation. UART signals use the ESP32-S3 GPIO matrix.
-constexpr int MODBUS_RX = 2;
+// MODBUS_RX was moved from GPIO2 to GPIO33 after verifying the V4.2 GC1109 FEM:
+// GPIO2 is the onboard FEM enable signal and is therefore unavailable to Rev A.
+constexpr int MODBUS_RX = 33;
 constexpr int MODBUS_TX = 4;
 constexpr int MODBUS_DIR = 5;
 
@@ -49,7 +56,9 @@ constexpr int VEBUS_DIR = 6;
 constexpr int VEBUS_STB_CTRL = 43;
 constexpr int VEBUS_PD_CTRL = 44;
 
-// GPIO3, GPIO45 and GPIO46 are intentionally left unused because they are
-// ESP32-S3 strapping pins. GPIO26 is also kept free for board-revision margin.
+// GPIO3 and GPIO45 remain unused carrier-side because they are ESP32-S3
+// strapping pins. GPIO46 is also a strapping pin, but on Heltec V4.2 it is
+// already consumed onboard by the GC1109 PA-mode control and is not available
+// to the carrier. GPIO26 remains free for board-revision margin.
 
 } // namespace multibus::board
