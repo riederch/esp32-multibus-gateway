@@ -144,6 +144,10 @@ public:
         captureModbusCompatibilitySample();
         processModbusCompatibilityReport();
         gnss_.loop();
+        if (rebootRequested_) {
+            delay(20);
+            ESP.restart();
+        }
     }
 
     const DeviceConfig& config() const { return config_; }
@@ -156,6 +160,7 @@ public:
 private:
     enum class ParsedCommandKind : uint8_t {
         ReportInterval,
+        BasicControl,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -164,6 +169,7 @@ private:
     struct ParsedCommand {
         ParsedCommandKind kind = ParsedCommandKind::ModbusChannel;
         lorawan::ReportIntervalCommand reportInterval;
+        lorawan::BasicControlCommand basicControl = lorawan::BasicControlCommand::Rejoin;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -254,6 +260,15 @@ private:
             size_t consumed = 0;
 
             if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                (header.type == lorawan::FPort85Codec::kRejoinType ||
+                 header.type == lorawan::FPort85Codec::kRebootType)) {
+                parsed.kind = ParsedCommandKind::BasicControl;
+                if (lorawan::FPort85Codec::decodeBasicControlCommand(
+                        payload + offset, length - offset, parsed.basicControl, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                 header.type == lorawan::FPort85Codec::kReportIntervalType) {
                 parsed.kind = ParsedCommandKind::ReportInterval;
                 if (!lorawan::decodeReportIntervalCommand(
@@ -296,6 +311,13 @@ private:
 
         for (const auto& command : commands) {
             switch (command.kind) {
+                case ParsedCommandKind::BasicControl:
+                    if (command.basicControl == lorawan::BasicControlCommand::Rejoin) {
+                        if (!lora_.requestRejoin()) return false;
+                    } else if (command.basicControl == lorawan::BasicControlCommand::Reboot) {
+                        rebootRequested_ = true;
+                    }
+                    break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
                     break;
@@ -500,6 +522,7 @@ private:
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
+    bool rebootRequested_ = false;
 };
 
 } // namespace multibus
