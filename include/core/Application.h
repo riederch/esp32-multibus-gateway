@@ -176,7 +176,7 @@ public:
 
         if (!mqtt_.begin(
                 config_.mqtt,
-                config_.network.hostname,
+                defaultHostname(),
                 channels_,
                 &Application::mqttReadThunk,
                 &Application::mqttCommandThunk,
@@ -369,7 +369,7 @@ private:
 
         JsonDocument doc;
         if (deserializeJson(doc, payload, length) != DeserializationError::Ok ||
-            !doc["value"].is<JsonVariantConst>()) {
+            doc["value"].isNull()) {
             return false;
         }
 
