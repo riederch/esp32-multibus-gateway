@@ -15,6 +15,8 @@
 #include "lorawan/FPort85Codec.h"
 #include "history/HistorySettings.h"
 #include "history/HistorySettingsStore.h"
+#include "history/HistoryRetransmissionState.h"
+#include "history/HistoryRetransmissionStateStore.h"
 #include "history/PersistentHistoryStore.h"
 #include "lorawan/FPort85History.h"
 #include "lorawan/FPort85ReportScheduler.h"
@@ -63,6 +65,10 @@ public:
         }
         if (!historyStore_.begin()) {
             Serial.println("Failed to open persistent history store.");
+            return false;
+        }
+        if (!historyRetransmissionStore_.begin()) {
+            Serial.println("Failed to open history retransmission state store.");
             return false;
         }
 
@@ -133,6 +139,10 @@ public:
             Serial.println("Failed to load persistent history.");
             return false;
         }
+        if (!historyRetransmissionStore_.load(historyRetransmissionState_)) {
+            Serial.println("Failed to load history retransmission state.");
+            return false;
+        }
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -171,10 +181,12 @@ public:
         web_.loop();
         victron_.loop();
         lora_.loop();
+        processHistoryNetworkState();
         modbus_.loop();
         captureModbusCompatibilitySample();
         processHistoryStorage();
-        processModbusCompatibilityReport();
+        const bool retransmissionActive = processHistoryRetransmission();
+        if (!retransmissionActive) processModbusCompatibilityReport();
         gnss_.loop();
         if (rebootRequested_) {
             delay(20);
@@ -242,6 +254,7 @@ private:
         timeSettingsStore_.clear();
         historySettingsStore_.clear();
         historyStore_.clear();
+        historyRetransmissionStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -270,6 +283,132 @@ private:
                 if (completion.valueCount > 1) sample.values[1] = completion.values[1];
             }
         }
+    }
+
+    void processHistoryNetworkState() {
+        const bool connected = lora_.connected();
+
+        if (!historyNetworkStateInitialized_) {
+            historyNetworkStateInitialized_ = true;
+            historyWasConnected_ = connected;
+            if (connected && historyRetransmissionState_.pending) {
+                retransmissionCursorInitialized_ = false;
+                nextHistoryRetransmissionAtMs_ = millis();
+            }
+            return;
+        }
+
+        if (historyWasConnected_ && !connected &&
+            historySettings_.storageEnabled &&
+            historySettings_.retransmissionEnabled) {
+            const time_t unixNow = ::time(nullptr);
+            if (unixNow > 0) {
+                history::RetransmissionState updated;
+                updated.pending = true;
+                updated.lostAtUnix = static_cast<uint32_t>(unixNow);
+                if (historyRetransmissionStore_.save(updated)) {
+                    historyRetransmissionState_ = updated;
+                    retransmissionCursorInitialized_ = false;
+                } else {
+                    ++historyRetransmissionStateFailures_;
+                }
+            }
+        } else if (!historyWasConnected_ && connected && historyRetransmissionState_.pending) {
+            retransmissionCursorInitialized_ = false;
+            nextHistoryRetransmissionAtMs_ = millis();
+        }
+
+        historyWasConnected_ = connected;
+    }
+
+    bool processHistoryRetransmission() {
+        if (!historySettings_.storageEnabled ||
+            !historySettings_.retransmissionEnabled ||
+            !historyRetransmissionState_.pending ||
+            !lora_.connected()) {
+            return false;
+        }
+
+        const uint32_t now = millis();
+        if (static_cast<int32_t>(now - nextHistoryRetransmissionAtMs_) < 0) return false;
+
+        if (!retransmissionCursorInitialized_) {
+            retransmissionSnapshot_ = historyRing_;
+            retransmissionCursor_ = 0;
+            while (retransmissionCursor_ < retransmissionSnapshot_.size()) {
+                const lorawan::HistoricalRecord* record =
+                    retransmissionSnapshot_.oldest(retransmissionCursor_);
+                if (record != nullptr && record->timestamp() >= historyRetransmissionState_.lostAtUnix) break;
+                ++retransmissionCursor_;
+            }
+            retransmissionCursorInitialized_ = true;
+        }
+
+        if (retransmissionCursor_ >= retransmissionSnapshot_.size()) {
+            history::RetransmissionState cleared;
+            if (!historyRetransmissionStore_.save(cleared)) {
+                ++historyRetransmissionStateFailures_;
+                nextHistoryRetransmissionAtMs_ =
+                    now + static_cast<uint32_t>(historySettings_.retransmissionIntervalSeconds) * 1000UL;
+                return true;
+            }
+            historyRetransmissionState_ = cleared;
+            retransmissionCursorInitialized_ = false;
+            return false;
+        }
+
+        uint8_t payload[lorawan::kCompatibilityReportPayloadLimit] = {0};
+        size_t written = 0;
+        size_t recordsAdded = 0;
+        while (retransmissionCursor_ + recordsAdded < retransmissionSnapshot_.size()) {
+            const lorawan::HistoricalRecord* record =
+                retransmissionSnapshot_.oldest(retransmissionCursor_ + recordsAdded);
+            if (record == nullptr) break;
+            if (written + lorawan::kHistoricalModbusRecordLength >
+                lorawan::kCompatibilityReportPayloadLimit) {
+                break;
+            }
+            memcpy(payload + written, record->payload, lorawan::kHistoricalModbusRecordLength);
+            written += lorawan::kHistoricalModbusRecordLength;
+            ++recordsAdded;
+        }
+
+        if (recordsAdded == 0 || written == 0) {
+            ++historyRetransmissionEncodeFailures_;
+            nextHistoryRetransmissionAtMs_ =
+                now + static_cast<uint32_t>(historySettings_.retransmissionIntervalSeconds) * 1000UL;
+            return true;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+
+        if (!lora_.send(envelope)) {
+            ++historyRetransmissionSendFailures_;
+            nextHistoryRetransmissionAtMs_ =
+                now + static_cast<uint32_t>(historySettings_.retransmissionIntervalSeconds) * 1000UL;
+            return true;
+        }
+
+        retransmissionCursor_ += recordsAdded;
+        ++historyRetransmissionPacketsSent_;
+        nextHistoryRetransmissionAtMs_ =
+            now + static_cast<uint32_t>(historySettings_.retransmissionIntervalSeconds) * 1000UL;
+
+        if (retransmissionCursor_ >= retransmissionSnapshot_.size()) {
+            history::RetransmissionState cleared;
+            if (historyRetransmissionStore_.save(cleared)) {
+                historyRetransmissionState_ = cleared;
+                retransmissionCursorInitialized_ = false;
+            } else {
+                ++historyRetransmissionStateFailures_;
+            }
+        }
+
+        return true;
     }
 
     void processHistoryStorage() {
@@ -642,6 +781,13 @@ private:
         updated.storageEnabled = command.enabled;
         if (!historySettingsStore_.save(updated)) return false;
         historySettings_ = updated;
+
+        if (!command.enabled && historyRetransmissionState_.pending) {
+            history::RetransmissionState cleared;
+            if (!historyRetransmissionStore_.save(cleared)) return false;
+            historyRetransmissionState_ = cleared;
+            retransmissionCursorInitialized_ = false;
+        }
         return true;
     }
 
@@ -650,6 +796,13 @@ private:
         updated.retransmissionEnabled = command.enabled;
         if (!historySettingsStore_.save(updated)) return false;
         historySettings_ = updated;
+
+        if (!command.enabled && historyRetransmissionState_.pending) {
+            history::RetransmissionState cleared;
+            if (!historyRetransmissionStore_.save(cleared)) return false;
+            historyRetransmissionState_ = cleared;
+            retransmissionCursorInitialized_ = false;
+        }
         return true;
     }
 
@@ -790,12 +943,13 @@ private:
         Serial.printf("  DST: %s, bias=%u min\n",
                       timeSettings_.dst.enabled ? "enabled" : "disabled",
                       static_cast<unsigned>(timeSettings_.dst.biasMinutes));
-        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, records=%u/%u\n",
+        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, records=%u/%u, pending=%s\n",
                       historySettings_.storageEnabled ? "enabled" : "disabled",
                       historySettings_.retransmissionEnabled ? "enabled" : "disabled",
                       static_cast<unsigned>(historySettings_.retransmissionIntervalSeconds),
                       static_cast<unsigned>(historyRing_.size()),
-                      static_cast<unsigned>(historyRing_.capacity()));
+                      static_cast<unsigned>(historyRing_.capacity()),
+                      historyRetransmissionState_.pending ? "yes" : "no");
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
@@ -834,6 +988,9 @@ private:
     history::Settings historySettings_;
     history::PersistentHistoryStore historyStore_;
     history::PersistentHistoryStore::Ring historyRing_;
+    history::PersistentHistoryStore::Ring retransmissionSnapshot_;
+    history::RetransmissionStateStore historyRetransmissionStore_;
+    history::RetransmissionState historyRetransmissionState_;
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
     SecurityStore security_;
     BoardService board_;
@@ -851,6 +1008,15 @@ private:
     uint32_t historySnapshotsSkippedNoTime_ = 0;
     uint32_t historyEncodeFailures_ = 0;
     uint32_t historyPersistFailures_ = 0;
+    uint32_t nextHistoryRetransmissionAtMs_ = 0;
+    size_t retransmissionCursor_ = 0;
+    uint32_t historyRetransmissionPacketsSent_ = 0;
+    uint32_t historyRetransmissionSendFailures_ = 0;
+    uint32_t historyRetransmissionEncodeFailures_ = 0;
+    uint32_t historyRetransmissionStateFailures_ = 0;
+    bool retransmissionCursorInitialized_ = false;
+    bool historyNetworkStateInitialized_ = false;
+    bool historyWasConnected_ = false;
     bool rebootRequested_ = false;
 };
 
