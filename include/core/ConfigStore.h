@@ -49,6 +49,8 @@ public:
             config.mqtt.topicPrefix = prefs_.getString("mq_prefix", "multibus");
             config.mqtt.publishIntervalSeconds = prefs_.getUShort("mq_pub_s", 30);
             config.mqtt.retainState = prefs_.getBool("mq_retain", true);
+            config.mqtt.homeAssistantDiscovery = prefs_.getBool("mq_ha", false);
+            config.mqtt.homeAssistantPrefix = prefs_.getString("mq_ha_pref", "homeassistant");
         }
 
         needsSave_ = storedSchema != DEVICE_CONFIG_SCHEMA_VERSION;
@@ -84,6 +86,8 @@ public:
         prefs_.putString("mq_prefix", config.mqtt.topicPrefix);
         prefs_.putUShort("mq_pub_s", config.mqtt.publishIntervalSeconds);
         prefs_.putBool("mq_retain", config.mqtt.retainState);
+        prefs_.putBool("mq_ha", config.mqtt.homeAssistantDiscovery);
+        prefs_.putString("mq_ha_pref", config.mqtt.homeAssistantPrefix);
 
         needsSave_ = false;
         return prefs_.getUInt("schema", 0) == DEVICE_CONFIG_SCHEMA_VERSION;
