@@ -6,6 +6,7 @@
 #include "board/BoardPins.h"
 #include "ModbusChannel.h"
 #include "ModbusRtuCodec.h"
+#include "PassiveFrameAssembler.h"
 #include "Rs485Settings.h"
 
 namespace multibus {
@@ -94,6 +95,7 @@ public:
         cancelTransaction();
         if (started_) serial_.end();
         digitalWrite(board::MODBUS_DIR, LOW);
+        passiveAssembler_.clear();
         started_ = false;
     }
 
@@ -125,6 +127,9 @@ public:
             channel, request, sizeof(request), requestLength);
         if (requestStatus != RtuDecodeStatus::Ok) return fail(requestStatus);
 
+        passiveAssembler_.clear();
+        passiveAssembler_.clear();
+        passiveAssembler_.clear();
         drainReceiveBuffer();
         waitInterFrameGap();
 
@@ -344,12 +349,35 @@ public:
         return RtuTransactionResult::Success;
     }
 
+    PassiveFrameResult pollPassiveRaw(uint8_t* output,
+                                             size_t capacity,
+                                             size_t& written) {
+        written = 0;
+        if (!started_ || transactionActive_) return PassiveFrameResult::Idle;
+
+        while (serial_.available() > 0) {
+            const int raw = serial_.read();
+            if (raw < 0) break;
+            if (!passiveAssembler_.append(static_cast<uint8_t>(raw), micros())) {
+                break;
+            }
+        }
+
+        return passiveAssembler_.poll(
+            micros(),
+            calculatedInterFrameDelayUs(),
+            output,
+            capacity,
+            written);
+    }
+
     void cancelTransaction() {
         transactionActive_ = false;
         transactionKind_ = RtuTransactionKind::None;
         responseLength_ = 0;
         expectedResponseLength_ = 0;
         digitalWrite(board::MODBUS_DIR, LOW);
+        passiveAssembler_.clear();
         if (started_) drainReceiveBuffer();
     }
 
@@ -473,6 +501,7 @@ private:
     uint8_t activeRequest_[242] = {0};
     size_t activeRequestLength_ = 0;
     uint8_t response_[242] = {0};
+    PassiveFrameAssembler<242> passiveAssembler_;
     size_t responseLength_ = 0;
     size_t expectedResponseLength_ = 0;
     uint32_t transactionStartedAtMs_ = 0;
