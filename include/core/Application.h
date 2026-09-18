@@ -24,6 +24,8 @@
 #include "modbus/ModbusChannelStore.h"
 #include "modbus/ModbusMasterSettingsStore.h"
 #include "modbus/Rs485SettingsStore.h"
+#include "rules/RuleState.h"
+#include "rules/RuleStore.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
@@ -69,6 +71,10 @@ public:
         }
         if (!historyRetransmissionStore_.begin()) {
             Serial.println("Failed to open history retransmission state store.");
+            return false;
+        }
+        if (!ruleStore_.begin()) {
+            Serial.println("Failed to open rule store.");
             return false;
         }
 
@@ -143,6 +149,10 @@ public:
             Serial.println("Failed to load history retransmission state.");
             return false;
         }
+        if (!ruleStore_.load(ruleState_)) {
+            Serial.println("Failed to load persisted rules.");
+            return false;
+        }
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -186,10 +196,11 @@ public:
         const bool passThroughHandled = processModbusPassThroughResponse();
         captureModbusCompatibilitySample();
         processHistoryStorage();
-        const bool queryActive = !passThroughHandled && processHistoryQuery();
+        const bool ruleReplyActive = !passThroughHandled && processRuleReply();
+        const bool queryActive = !passThroughHandled && !ruleReplyActive && processHistoryQuery();
         const bool retransmissionActive =
-            !passThroughHandled && !queryActive && processHistoryRetransmission();
-        if (!passThroughHandled && !queryActive && !retransmissionActive) {
+            !passThroughHandled && !ruleReplyActive && !queryActive && processHistoryRetransmission();
+        if (!passThroughHandled && !ruleReplyActive && !queryActive && !retransmissionActive) {
             processModbusCompatibilityReport();
         }
         gnss_.loop();
@@ -219,6 +230,9 @@ private:
         RetransmissionInterval,
         RetrievabilityInterval,
         HistoryQuery,
+        RuleStatus,
+        RuleEnquiry,
+        RuleConfiguration,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -237,6 +251,9 @@ private:
         lorawan::RetransmissionIntervalCommand retransmissionInterval;
         lorawan::RetrievabilityIntervalCommand retrievabilityInterval;
         lorawan::HistoryQueryCommand historyQuery;
+        lorawan::RuleStatusCommand ruleStatus;
+        lorawan::RuleEnquiryCommand ruleEnquiry;
+        lorawan::RuleConfigurationCommand ruleConfiguration;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -264,6 +281,7 @@ private:
         historySettingsStore_.clear();
         historyStore_.clear();
         historyRetransmissionStore_.clear();
+        ruleStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -568,6 +586,121 @@ private:
         return true;
     }
 
+    bool processRuleReply() {
+        if (ruleReplyCursor_ >= ruleReplyCount_ || !lora_.connected()) return false;
+
+        const rules::StoredFrame& frame = ruleReplyFrames_[ruleReplyCursor_];
+        if (!frame.present()) {
+            ++ruleReplyCursor_;
+            if (ruleReplyCursor_ >= ruleReplyCount_) clearRuleReplyQueue();
+            return true;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = frame.data;
+        envelope.length = frame.length;
+        envelope.confirmed = false;
+
+        if (!lora_.send(envelope)) {
+            ++ruleReplySendFailures_;
+            return true;
+        }
+
+        ++ruleReplyCursor_;
+        ++ruleReplyPacketsSent_;
+        if (ruleReplyCursor_ >= ruleReplyCount_) clearRuleReplyQueue();
+        return true;
+    }
+
+    void clearRuleReplyQueue() {
+        for (auto& frame : ruleReplyFrames_) frame.clear();
+        ruleReplyCount_ = 0;
+        ruleReplyCursor_ = 0;
+    }
+
+    bool stageRuleEnquiryReply(uint8_t ruleId) {
+        const rules::RuleRecord* record = ruleState_.rule(ruleId);
+        if (record == nullptr) return false;
+
+        clearRuleReplyQueue();
+        for (size_t i = 0; i < rules::kRuleFrameSlots; ++i) {
+            if (!record->frames[i].present()) continue;
+            ruleReplyFrames_[ruleReplyCount_++] = record->frames[i];
+        }
+        return true;
+    }
+
+    bool stageRuleConfigurationAck(const lorawan::RuleConfigurationCommand& command,
+                                   uint8_t status) {
+        if (command.frame == nullptr || command.frameLength < 4 ||
+            command.frameLength + 1U > rules::kMaxRuleFrameLength) {
+            return false;
+        }
+
+        clearRuleReplyQueue();
+        rules::StoredFrame& reply = ruleReplyFrames_[0];
+        reply.length = static_cast<uint8_t>(command.frameLength + 1U);
+        reply.data[0] = 0xf8;
+        reply.data[1] = lorawan::FPort85Codec::kRuleConfigurationType;
+        memcpy(reply.data + 2, command.frame + 2, command.frameLength - 2U);
+        reply.data[command.frameLength] = status;
+        ruleReplyCount_ = 1;
+        ruleReplyCursor_ = 0;
+        return true;
+    }
+
+    bool applyRuleConfigurationCommand(const lorawan::RuleConfigurationCommand& command) {
+        rules::RuleRecord* current = ruleState_.rule(command.ruleId);
+        if (current == nullptr || command.frame == nullptr ||
+            static_cast<size_t>(command.slot) >= rules::kRuleFrameSlots) {
+            return false;
+        }
+
+        rules::RuleRecord updated = *current;
+        updated.enabled = command.enabled;
+        if (!updated.frames[static_cast<size_t>(command.slot)].set(
+                command.frame, command.frameLength)) {
+            return false;
+        }
+        if (!ruleStore_.saveRule(command.ruleId, updated)) return false;
+        *current = updated;
+        return stageRuleConfigurationAck(command, 0x00);
+    }
+
+    bool applyRuleStatusCommand(const lorawan::RuleStatusCommand& command) {
+        rules::RuleRecord originals[rules::kRuleCount];
+        bool touched[rules::kRuleCount] = {false};
+
+        for (uint8_t bit = 0; bit < rules::kRuleCount; ++bit) {
+            if ((command.ruleMask & (static_cast<uint16_t>(1U) << bit)) == 0) continue;
+            rules::RuleRecord* current = ruleState_.rule(static_cast<uint8_t>(bit + 1U));
+            if (current == nullptr) return false;
+            originals[bit] = *current;
+            touched[bit] = true;
+
+            rules::RuleRecord updated = *current;
+            if (command.operation == lorawan::RuleStatusOperation::Enable) {
+                updated.enabled = true;
+            } else if (command.operation == lorawan::RuleStatusOperation::Disable) {
+                updated.enabled = false;
+            } else {
+                updated.clear();
+            }
+
+            if (!ruleStore_.saveRule(static_cast<uint8_t>(bit + 1U), updated)) {
+                for (uint8_t rollback = 0; rollback < bit; ++rollback) {
+                    if (!touched[rollback]) continue;
+                    ruleStore_.saveRule(static_cast<uint8_t>(rollback + 1U), originals[rollback]);
+                    *ruleState_.rule(static_cast<uint8_t>(rollback + 1U)) = originals[rollback];
+                }
+                return false;
+            }
+            *current = updated;
+        }
+        return true;
+    }
+
     void processHistoryStorage() {
         if (!historySettings_.storageEnabled) return;
 
@@ -789,6 +922,30 @@ private:
                     consumed == 0) {
                     return false;
                 }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRuleStatusType) {
+                parsed.kind = ParsedCommandKind::RuleStatus;
+                if (lorawan::FPort85Codec::decodeRuleStatusCommand(
+                        payload + offset, length - offset, parsed.ruleStatus, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRuleEnquiryType) {
+                parsed.kind = ParsedCommandKind::RuleEnquiry;
+                if (lorawan::FPort85Codec::decodeRuleEnquiryCommand(
+                        payload + offset, length - offset, parsed.ruleEnquiry, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRuleConfigurationType) {
+                parsed.kind = ParsedCommandKind::RuleConfiguration;
+                if (lorawan::FPort85Codec::decodeRuleConfigurationCommand(
+                        payload + offset, length - offset, parsed.ruleConfiguration, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
@@ -881,6 +1038,15 @@ private:
                     break;
                 case ParsedCommandKind::HistoryQuery:
                     if (!applyHistoryQueryCommand(command.historyQuery)) return false;
+                    break;
+                case ParsedCommandKind::RuleStatus:
+                    if (!applyRuleStatusCommand(command.ruleStatus)) return false;
+                    break;
+                case ParsedCommandKind::RuleEnquiry:
+                    if (!stageRuleEnquiryReply(command.ruleEnquiry.ruleId)) return false;
+                    break;
+                case ParsedCommandKind::RuleConfiguration:
+                    if (!applyRuleConfigurationCommand(command.ruleConfiguration)) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
@@ -1167,6 +1333,18 @@ private:
         Serial.printf("  DST: %s, bias=%u min\n",
                       timeSettings_.dst.enabled ? "enabled" : "disabled",
                       static_cast<unsigned>(timeSettings_.dst.biasMinutes));
+        uint8_t configuredRules = 0;
+        uint8_t enabledRules = 0;
+        for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+            const rules::RuleRecord* rule = ruleState_.rule(id);
+            if (rule == nullptr || !rule->configured()) continue;
+            ++configuredRules;
+            if (rule->enabled) ++enabledRules;
+        }
+        Serial.printf("  Rules: configured=%u/%u, enabled=%u\n",
+                      static_cast<unsigned>(configuredRules),
+                      static_cast<unsigned>(rules::kRuleCount),
+                      static_cast<unsigned>(enabledRules));
         Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, query=%u s, records=%u/%u, pending=%s\n",
                       historySettings_.storageEnabled ? "enabled" : "disabled",
                       historySettings_.retransmissionEnabled ? "enabled" : "disabled",
@@ -1216,6 +1394,11 @@ private:
     history::PersistentHistoryStore::Ring retransmissionSnapshot_;
     history::RetransmissionStateStore historyRetransmissionStore_;
     history::RetransmissionState historyRetransmissionState_;
+    rules::RuleStore ruleStore_;
+    rules::RuleState ruleState_;
+    rules::StoredFrame ruleReplyFrames_[rules::kRuleFrameSlots];
+    size_t ruleReplyCount_ = 0;
+    size_t ruleReplyCursor_ = 0;
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
     SecurityStore security_;
     BoardService board_;
@@ -1247,6 +1430,8 @@ private:
     uint32_t nextHistoryQueryAtMs_ = 0;
     uint32_t historyQueryPacketsSent_ = 0;
     uint32_t historyQuerySendFailures_ = 0;
+    uint32_t ruleReplyPacketsSent_ = 0;
+    uint32_t ruleReplySendFailures_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
