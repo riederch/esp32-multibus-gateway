@@ -156,6 +156,7 @@ public:
             Serial.println("Failed to load persisted rules.");
             return false;
         }
+        refreshPassiveRuleCapture();
         ruleBootEvaluationPending_ = true;
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
@@ -298,6 +299,41 @@ private:
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
+    }
+
+    void refreshPassiveRuleCapture() {
+        bool needed = false;
+        for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+            const rules::RuleRecord* record = ruleState_.rule(id);
+            if (record == nullptr || !record->enabled ||
+                !record->frames[0].present()) {
+                continue;
+            }
+            if (record->frames[0].length >= 4 &&
+                record->frames[0].data[0] == 0xf9 &&
+                record->frames[0].data[1] == 0x7d &&
+                record->frames[0].data[3] == 0x13) {
+                needed = true;
+                break;
+            }
+        }
+        modbus_.setPassiveRawCapture(needed);
+    }
+
+    bool triggerRs485MessageRules(const uint8_t* payload, size_t length) {
+        bool matched = false;
+        for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+            const rules::RuleRecord* record = ruleState_.rule(id);
+            if (record == nullptr || !record->enabled) continue;
+            if (!rules::matchesRs485MessageCondition(
+                    record->frames[0], payload, length)) {
+                continue;
+            }
+            scheduleRuleActions(id, *record);
+            matched = true;
+        }
+        if (matched) ++ruleRs485MessagesMatched_;
+        return matched;
     }
 
     void evaluateChannelRules(const ModbusComponent::PollCompletion& completion) {
@@ -1016,6 +1052,7 @@ private:
         if (!ruleStore_.saveRule(command.ruleId, updated)) return false;
         *current = updated;
         if (!updated.enabled) cancelScheduledRuleActions(command.ruleId);
+        refreshPassiveRuleCapture();
         return stageRuleConfigurationAck(command, 0x00);
     }
 
@@ -1113,6 +1150,34 @@ private:
             return true;
         }
 
+        if (completion.origin == ModbusComponent::RawRequestOrigin::PassiveReceive) {
+            if (!completion.success || completion.length == 0) {
+                ++passiveRs485Failures_;
+                return true;
+            }
+
+            triggerRs485MessageRules(completion.payload, completion.length);
+
+            if (modbus_.modbusMasterSettings().passThroughMode !=
+                modbus::PassThroughMode::TwoWay) {
+                ++passiveRs485Frames_;
+                return true;
+            }
+
+            TransportEnvelope passiveEnvelope;
+            passiveEnvelope.endpoint =
+                modbus_.modbusMasterSettings().passThroughPort;
+            passiveEnvelope.payload = completion.payload;
+            passiveEnvelope.length = completion.length;
+            passiveEnvelope.confirmed = false;
+            if (lora_.send(passiveEnvelope)) {
+                ++passiveRs485Frames_;
+            } else {
+                ++passiveRs485Failures_;
+            }
+            return true;
+        }
+
         if (!completion.success || completion.length == 0) {
             ++passThroughFailures_;
             return true;
@@ -1184,7 +1249,8 @@ private:
         if (fport != lorawan::kCompatibilityFPort) {
             const auto& settings = modbus_.modbusMasterSettings();
             if (config_.components.modbus == ModbusMode::Master &&
-                settings.passThroughMode == modbus::PassThroughMode::Active &&
+                (settings.passThroughMode == modbus::PassThroughMode::Active ||
+                 settings.passThroughMode == modbus::PassThroughMode::TwoWay) &&
                 fport == settings.passThroughPort) {
                 return modbus_.queueRawRequest(payload, length);
             }
@@ -1821,6 +1887,9 @@ private:
     uint32_t ruleRawRs485Completions_ = 0;
     uint32_t ruleRawRs485Failures_ = 0;
     uint32_t ruleServerMessagesMatched_ = 0;
+    uint32_t ruleRs485MessagesMatched_ = 0;
+    uint32_t passiveRs485Frames_ = 0;
+    uint32_t passiveRs485Failures_ = 0;
     uint32_t ruleChannelTriggers_ = 0;
     uint32_t ruleChannelReleases_ = 0;
     uint32_t ruleAlarmEncodeFailures_ = 0;
