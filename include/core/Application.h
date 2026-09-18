@@ -638,15 +638,13 @@ private:
             return false;
         }
 
-        clearRuleReplyQueue();
-        rules::StoredFrame& reply = ruleReplyFrames_[0];
+        if (ruleReplyCount_ >= rules::kRuleFrameSlots) return false;
+        rules::StoredFrame& reply = ruleReplyFrames_[ruleReplyCount_++];
         reply.length = static_cast<uint8_t>(command.frameLength + 1U);
         reply.data[0] = 0xf8;
         reply.data[1] = lorawan::FPort85Codec::kRuleConfigurationType;
         memcpy(reply.data + 2, command.frame + 2, command.frameLength - 2U);
         reply.data[command.frameLength] = status;
-        ruleReplyCount_ = 1;
-        ruleReplyCursor_ = 0;
         return true;
     }
 
