@@ -11,6 +11,7 @@ using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
+using multibus::lorawan::LnsTimeSyncCommand;
 using multibus::lorawan::ModbusMasterSettingsCommand;
 using multibus::lorawan::PeriodicReportEnquiryCommand;
 using multibus::lorawan::Rs485SettingsCommand;
@@ -320,7 +321,27 @@ static void testUtcTimezoneRejectsOutOfRange() {
     assert(consumed == 0);
 }
 
+static void testLnsTimeSyncReferenceVector() {
+    const uint8_t payload[] = {0xff, 0x4a, 0x00};
+    LnsTimeSyncCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeLnsTimeSyncCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+}
+
+static void testLnsTimeSyncRejectsInvalidValue() {
+    const uint8_t payload[] = {0xff, 0x4a, 0x01};
+    LnsTimeSyncCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeLnsTimeSyncCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 int main() {
+    testLnsTimeSyncReferenceVector();
+    testLnsTimeSyncRejectsInvalidValue();
     testUtcTimezoneReferenceVector();
     testUtcTimezonePositiveOffset();
     testUtcTimezoneRejectsOutOfRange();

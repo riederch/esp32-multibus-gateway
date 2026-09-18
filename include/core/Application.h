@@ -173,6 +173,7 @@ private:
         BasicControl,
         PeriodicReportEnquiry,
         UtcTimezone,
+        LnsTimeSync,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -185,6 +186,7 @@ private:
         lorawan::BasicControlCommand basicControl = lorawan::BasicControlCommand::Rejoin;
         lorawan::PeriodicReportEnquiryCommand periodicReportEnquiry;
         lorawan::UtcTimezoneCommand utcTimezone;
+        lorawan::LnsTimeSyncCommand lnsTimeSync;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -294,6 +296,14 @@ private:
                     return false;
                 }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kLnsTimeSyncType) {
+                parsed.kind = ParsedCommandKind::LnsTimeSync;
+                if (lorawan::FPort85Codec::decodeLnsTimeSyncCommand(
+                        payload + offset, length - offset, parsed.lnsTimeSync, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
                 if (lorawan::FPort85Codec::decodePeriodicReportEnquiryCommand(
@@ -364,6 +374,9 @@ private:
                     break;
                 case ParsedCommandKind::UtcTimezone:
                     if (!applyUtcTimezoneCommand(command.utcTimezone)) return false;
+                    break;
+                case ParsedCommandKind::LnsTimeSync:
+                    if (!lora_.requestNetworkTimeSync()) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;

@@ -56,6 +56,8 @@ struct UtcTimezoneCommand {
     int16_t offsetMinutes = 0;
 };
 
+struct LnsTimeSyncCommand {};
+
 struct ModbusMasterSettingsCommand {
     modbus::ModbusMasterSettings settings;
 };
@@ -88,6 +90,7 @@ public:
     static constexpr uint8_t kRebootType = 0x10;
     static constexpr uint8_t kPeriodicReportEnquiryType = 0x28;
     static constexpr uint8_t kUtcTimezoneType = 0xBD;
+    static constexpr uint8_t kLnsTimeSyncType = 0x4A;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
@@ -108,6 +111,7 @@ public:
         if (header.channelId == kSystemChannel && header.type == kRebootType) return true;
         if (header.channelId == kSystemChannel && header.type == kPeriodicReportEnquiryType) return true;
         if (header.channelId == kSystemChannel && header.type == kUtcTimezoneType) return true;
+        if (header.channelId == kSystemChannel && header.type == kLnsTimeSyncType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
@@ -178,6 +182,22 @@ public:
         command = UtcTimezoneCommand{};
         command.offsetMinutes = minutes;
         consumed = 4;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeLnsTimeSyncCommand(const uint8_t* payload,
+                                                size_t length,
+                                                LnsTimeSyncCommand& command,
+                                                size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kSystemChannel || payload[1] != kLnsTimeSyncType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (payload[2] != 0x00) return DecodeStatus::Invalid;
+
+        command = LnsTimeSyncCommand{};
+        consumed = 3;
         return DecodeStatus::Ok;
     }
 
