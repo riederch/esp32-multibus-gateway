@@ -124,6 +124,7 @@ public:
     enum class RawRequestOrigin : uint8_t {
         PassThrough,
         Rule,
+        PassiveReceive,
     };
 
     struct RawCompletion {
@@ -183,6 +184,10 @@ public:
 
     const modbus::ModbusMasterSettings& modbusMasterSettings() const {
         return masterSettings_;
+    }
+
+    void setPassiveRawCapture(bool enabled) {
+        passiveRawCapture_ = enabled;
     }
 
     const char* name() const override { return "modbus"; }
@@ -347,6 +352,34 @@ public:
             return;
         }
 
+        if (masterSettings_.passThroughMode == modbus::PassThroughMode::TwoWay ||
+            passiveRawCapture_) {
+            uint8_t passive[242] = {0};
+            size_t passiveLength = 0;
+            const modbus::PassiveFrameResult passiveResult =
+                rtuMaster_.pollPassiveRaw(passive, sizeof(passive), passiveLength);
+
+            if (passiveResult == modbus::PassiveFrameResult::Pending) return;
+            if (passiveResult == modbus::PassiveFrameResult::Ready) {
+                rawCompletion_ = RawCompletion{};
+                rawCompletion_.origin = RawRequestOrigin::PassiveReceive;
+                rawCompletion_.success = true;
+                rawCompletion_.length = passiveLength;
+                memcpy(rawCompletion_.payload, passive, passiveLength);
+                rawCompletion_.completedAtMs = millis();
+                rawCompletionPending_ = true;
+                return;
+            }
+            if (passiveResult == modbus::PassiveFrameResult::Overflow) {
+                rawCompletion_ = RawCompletion{};
+                rawCompletion_.origin = RawRequestOrigin::PassiveReceive;
+                rawCompletion_.success = false;
+                rawCompletion_.completedAtMs = millis();
+                rawCompletionPending_ = true;
+                return;
+            }
+        }
+
         if (pendingRaw_.queued) {
             activeRaw_ = pendingRaw_;
             pendingRaw_.queued = false;
@@ -360,6 +393,10 @@ public:
                 return;
             }
             rawInFlight_ = true;
+            return;
+        }
+
+        if (masterSettings_.passThroughMode == modbus::PassThroughMode::TwoWay) {
             return;
         }
 
@@ -393,7 +430,10 @@ public:
     }
 
     bool queueRawRequest(const uint8_t* payload, size_t length) {
-        if (masterSettings_.passThroughMode != modbus::PassThroughMode::Active) return false;
+        if (masterSettings_.passThroughMode != modbus::PassThroughMode::Active &&
+            masterSettings_.passThroughMode != modbus::PassThroughMode::TwoWay) {
+            return false;
+        }
         return queueRawRequestInternal(payload, length, RawRequestOrigin::PassThrough);
     }
 
@@ -764,6 +804,7 @@ private:
     PendingWrite activeWrite_;
     bool pollCompletionPending_ = false;
     bool rawCompletionPending_ = false;
+    bool passiveRawCapture_ = false;
     bool rawInFlight_ = false;
     bool writeInFlight_ = false;
     size_t pollChannelIndex_ = 0;
