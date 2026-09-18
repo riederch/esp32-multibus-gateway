@@ -669,6 +669,8 @@ private:
         uint32_t dueAtMs = 0;
         uint8_t ruleId = 0;
         uint8_t actionSlot = 0;
+        uint8_t payload[48] = {0};
+        uint8_t payloadLength = 0;
     };
 
     void cancelScheduledRuleActions(uint8_t ruleId) {
@@ -697,6 +699,16 @@ private:
             scheduled.dueAtMs = millis() + plan.delayMs;
             scheduled.ruleId = ruleId;
             scheduled.actionSlot = actionIndex;
+            if (plan.action == rules::ExecutableAction::RawRs485) {
+                if (plan.payload == nullptr || plan.payloadLength < 2 ||
+                    plan.payloadLength > sizeof(scheduled.payload)) {
+                    scheduled = ScheduledRuleAction{};
+                    ++ruleUnsupportedActions_;
+                    continue;
+                }
+                scheduled.payloadLength = plan.payloadLength;
+                memcpy(scheduled.payload, plan.payload, plan.payloadLength);
+            }
         }
         ++ruleTriggers_;
     }
@@ -719,6 +731,14 @@ private:
                 case rules::ExecutableAction::UploadData:
                     reportScheduler_.requestImmediateReport();
                     ++ruleActionsExecuted_;
+                    break;
+                case rules::ExecutableAction::RawRs485:
+                    if (modbus_.queueRuleRawRequest(
+                            scheduled.payload, scheduled.payloadLength)) {
+                        ++ruleActionsExecuted_;
+                    } else {
+                        ++ruleActionQueueFailures_;
+                    }
                     break;
                 case rules::ExecutableAction::Reboot:
                     rebootRequested_ = true;
@@ -937,6 +957,12 @@ private:
     bool processModbusPassThroughResponse() {
         ModbusComponent::RawCompletion completion;
         if (!modbus_.takeRawCompletion(completion)) return false;
+        if (completion.origin == ModbusComponent::RawRequestOrigin::Rule) {
+            if (completion.success) ++ruleRawRs485Completions_;
+            else ++ruleRawRs485Failures_;
+            return true;
+        }
+
         if (!completion.success || completion.length == 0) {
             ++passThroughFailures_;
             return true;
@@ -1624,6 +1650,9 @@ private:
     uint32_t ruleTriggers_ = 0;
     uint32_t ruleActionsExecuted_ = 0;
     uint32_t ruleUnsupportedActions_ = 0;
+    uint32_t ruleActionQueueFailures_ = 0;
+    uint32_t ruleRawRs485Completions_ = 0;
+    uint32_t ruleRawRs485Failures_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;

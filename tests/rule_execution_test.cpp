@@ -73,6 +73,17 @@ static void testActions() {
     assert(uploadPlan.action == ExecutableAction::UploadData);
     assert(uploadPlan.delayMs == 1000);
 
+    const uint8_t raw[] = {
+        0xf9, 0x7d, 0x81, 0x93,
+        0xf4, 0x01, 0x00, 0x00,
+        0x02, 0x01, 0x03
+    };
+    const ActionPlan rawPlan = decodeExecutableAction(frame(raw, sizeof(raw)));
+    assert(rawPlan.action == ExecutableAction::RawRs485);
+    assert(rawPlan.delayMs == 500);
+    assert(rawPlan.payloadLength == 2);
+    assert(rawPlan.payload[0] == 0x01 && rawPlan.payload[1] == 0x03);
+
     const uint8_t reboot[] = {0xf9, 0x7d, 0x81, 0xa6, 0x00, 0x00, 0x00, 0x00};
     const ActionPlan rebootPlan = decodeExecutableAction(frame(reboot, sizeof(reboot)));
     assert(rebootPlan.action == ExecutableAction::Reboot);
