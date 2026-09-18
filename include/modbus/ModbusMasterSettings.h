@@ -39,9 +39,10 @@ inline bool validModbusMasterSettings(const ModbusMasterSettings& settings) {
 
 inline bool runtimeSupportsModbusMasterSettings(const ModbusMasterSettings& settings) {
     if (!validModbusMasterSettings(settings)) return false;
-    // Active and two-way pass-through require the raw RS485/LoRaWAN bridge,
-    // which is deliberately not emulated by the polling master.
-    return settings.passThroughMode == PassThroughMode::Disabled;
+    // Active pass-through is supported by the raw RS485 transaction path.
+    // Two-way pass-through additionally requires unsolicited RS485 receive
+    // monitoring and remains deliberately unsupported until that path exists.
+    return settings.passThroughMode != PassThroughMode::TwoWay;
 }
 
 } // namespace modbus
