@@ -6,6 +6,7 @@
 using multibus::mqtt::CommandTopic;
 using multibus::mqtt::makeAvailabilityTopic;
 using multibus::mqtt::makeChannelCommandTopic;
+using multibus::mqtt::makeChannelCommandWildcard;
 using multibus::mqtt::makeChannelStateTopic;
 using multibus::mqtt::parseChannelCommandTopic;
 using multibus::mqtt::validTopicPrefix;
@@ -18,6 +19,9 @@ static void testTopics() {
 
     assert(makeChannelCommandTopic("site/gateway", "gw_01", 7, topic, sizeof(topic)));
     assert(strcmp(topic, "site/gateway/gw_01/channels/7/set") == 0);
+
+    assert(makeChannelCommandWildcard("multibus", "gw01", topic, sizeof(topic)));
+    assert(strcmp(topic, "multibus/gw01/channels/+/set") == 0);
 
     assert(makeAvailabilityTopic("multibus", "gw01", topic, sizeof(topic)));
     assert(strcmp(topic, "multibus/gw01/status") == 0);
