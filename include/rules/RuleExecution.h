@@ -10,6 +10,7 @@ namespace multibus::rules {
 
 enum class ExecutableAction : uint8_t {
     None,
+    ServerMessage,
     UploadData,
     RawRs485,
     Reboot,
@@ -84,7 +85,17 @@ inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
         return plan;
     }
 
-    if (actionKind == 0x03U && frame.length >= 11) {
+    if (actionKind == 0x01U && frame.length >= 10) {
+        const uint8_t messageLength = frame.data[8];
+        if (messageLength < 1 || messageLength > 48 ||
+            frame.length != static_cast<size_t>(9U + messageLength)) {
+            plan.action = ExecutableAction::Unsupported;
+            return plan;
+        }
+        plan.action = ExecutableAction::ServerMessage;
+        plan.payload = frame.data + 9;
+        plan.payloadLength = messageLength;
+    } else if (actionKind == 0x03U && frame.length >= 11) {
         const uint8_t messageLength = frame.data[8];
         if (messageLength < 2 || messageLength > 48 ||
             frame.length != static_cast<size_t>(9U + messageLength)) {
