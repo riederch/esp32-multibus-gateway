@@ -120,29 +120,25 @@ private:
 
         connected_ = true;
         client_.publish(statusTopic, "online", true);
-        subscribeWritableChannels();
+        subscribeCommandTopics();
         publishAll();
         nextPublishAtMs_ =
             millis() + static_cast<uint32_t>(config_->publishIntervalSeconds) * 1000UL;
         return true;
     }
 
-    void subscribeWritableChannels() {
-        if (channels_ == nullptr || config_ == nullptr) return;
+    void subscribeCommandTopics() {
+        if (config_ == nullptr) return;
 
         char topic[192] = {0};
-        for (const auto& binding : channels_->all()) {
-            if (!binding.enabled || !binding.writable) continue;
-            if (!mqtt::makeChannelCommandTopic(
-                    config_->topicPrefix.c_str(),
-                    deviceId_.c_str(),
-                    binding.channelId,
-                    topic,
-                    sizeof(topic))) {
-                continue;
-            }
-            client_.subscribe(topic);
+        if (!mqtt::makeChannelCommandWildcard(
+                config_->topicPrefix.c_str(),
+                deviceId_.c_str(),
+                topic,
+                sizeof(topic))) {
+            return;
         }
+        client_.subscribe(topic);
     }
 
     void publishAll() {
