@@ -14,6 +14,7 @@
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
 #include "lorawan/FPort85BasicInfo.h"
+#include "lorawan/FPort85Alarm.h"
 #include "history/HistorySettings.h"
 #include "history/HistorySettingsStore.h"
 #include "history/HistoryRetransmissionState.h"
@@ -311,13 +312,58 @@ private:
             if (!rules::decodeChannelCondition(record->frames[0], plan)) continue;
             if (plan.channelId != static_cast<uint8_t>(completion.channel.slot + 1U)) continue;
 
-            if (rules::evaluateChannelCondition(
-                    plan,
-                    completion.values[0],
-                    now,
-                    channelRuleRuntime_[id - 1U])) {
-                scheduleRuleActions(id, *record);
+            rules::ChannelConditionRuntime& runtime =
+                channelRuleRuntime_[id - 1U];
+            const bool wasFired = runtime.firedForActive;
+            double previousValue = 0.0;
+            const bool hadPrevious =
+                runtime.havePrevious &&
+                rules::scalarToDouble(completion.values[0], previousValue);
+            const double baselineBefore = runtime.previousValue;
+
+            const bool triggered = rules::evaluateChannelCondition(
+                plan,
+                completion.values[0],
+                now,
+                runtime);
+
+            double currentValue = 0.0;
+            rules::scalarToDouble(completion.values[0], currentValue);
+            const double changeValue =
+                hadPrevious ? fabs(currentValue - baselineBefore) : 0.0;
+
+            if (triggered) {
+                const lorawan::AlarmKind kind =
+                    (plan.mode == rules::ChannelThresholdMode::ChangeRecent ||
+                     plan.mode == rules::ChannelThresholdMode::ChangeInterval)
+                        ? lorawan::AlarmKind::Change
+                        : lorawan::AlarmKind::Threshold;
+                scheduleRuleActions(
+                    id,
+                    *record,
+                    &completion.channel,
+                    &completion.values[0],
+                    kind,
+                    changeValue,
+                    false);
                 ++ruleChannelTriggers_;
+            }
+
+            const bool released =
+                wasFired &&
+                !runtime.active &&
+                plan.mode != rules::ChannelThresholdMode::ChangeRecent &&
+                plan.mode != rules::ChannelThresholdMode::ChangeInterval;
+            if (released) {
+                scheduleRuleActions(
+                    id,
+                    *record,
+                    &completion.channel,
+                    &completion.values[0],
+                    lorawan::AlarmKind::ThresholdRelease,
+                    0.0,
+                    true);
+                ++ruleChannelReleases_;
             }
         }
     }
@@ -695,6 +741,11 @@ private:
         uint8_t actionSlot = 0;
         uint8_t payload[48] = {0};
         uint8_t payloadLength = 0;
+        bool alarmContextValid = false;
+        modbus::ChannelConfig alarmChannel;
+        modbus::DecodedScalar alarmValue;
+        lorawan::AlarmKind alarmKind = lorawan::AlarmKind::Threshold;
+        double alarmChangeValue = 0.0;
     };
 
     void cancelScheduledRuleActions(uint8_t ruleId) {
@@ -705,26 +756,53 @@ private:
         }
     }
 
-    void scheduleRuleActions(uint8_t ruleId, const rules::RuleRecord& record) {
+    void scheduleRuleActions(uint8_t ruleId,
+                             const rules::RuleRecord& record,
+                             const modbus::ChannelConfig* alarmChannel = nullptr,
+                             const modbus::DecodedScalar* alarmValue = nullptr,
+                             lorawan::AlarmKind alarmKind = lorawan::AlarmKind::Threshold,
+                             double alarmChangeValue = 0.0,
+                             bool releaseOnly = false) {
         for (uint8_t actionIndex = 0; actionIndex < 3; ++actionIndex) {
             const rules::ActionPlan plan =
                 rules::decodeExecutableAction(record.frames[actionIndex + 1U]);
             if (plan.action == rules::ExecutableAction::None) continue;
+            if (releaseOnly && plan.action != rules::ExecutableAction::UploadAlarm) continue;
             if (plan.action == rules::ExecutableAction::Unsupported) {
                 ++ruleUnsupportedActions_;
                 continue;
             }
 
-            const size_t slot =
+            const size_t baseSlot =
                 (static_cast<size_t>(ruleId) - 1U) * 3U + actionIndex;
+            const size_t slot = releaseOnly
+                ? baseSlot + rules::kRuleCount * 3U
+                : baseSlot;
             ScheduledRuleAction& scheduled = scheduledRuleActions_[slot];
             scheduled.pending = true;
             scheduled.action = plan.action;
             scheduled.dueAtMs = millis() + plan.delayMs;
             scheduled.ruleId = ruleId;
             scheduled.actionSlot = actionIndex;
-            if (plan.action == rules::ExecutableAction::RawRs485 ||
-                plan.action == rules::ExecutableAction::ServerMessage) {
+            if (plan.action == rules::ExecutableAction::UploadAlarm) {
+                if (alarmChannel == nullptr || alarmValue == nullptr) {
+                    scheduled = ScheduledRuleAction{};
+                    ++ruleUnsupportedActions_;
+                    continue;
+                }
+                if (releaseOnly && !plan.thresholdReleaseEnabled) {
+                    scheduled = ScheduledRuleAction{};
+                    continue;
+                }
+                scheduled.alarmContextValid = true;
+                scheduled.alarmChannel = *alarmChannel;
+                scheduled.alarmValue = *alarmValue;
+                scheduled.alarmKind = releaseOnly
+                    ? lorawan::AlarmKind::ThresholdRelease
+                    : alarmKind;
+                scheduled.alarmChangeValue = alarmChangeValue;
+            } else if (plan.action == rules::ExecutableAction::RawRs485 ||
+                       plan.action == rules::ExecutableAction::ServerMessage) {
                 if (plan.payload == nullptr || plan.payloadLength < 2 ||
                     plan.payloadLength > sizeof(scheduled.payload)) {
                     scheduled = ScheduledRuleAction{};
@@ -778,6 +856,40 @@ private:
                         ++ruleActionQueueFailures_;
                     }
                     break;
+                case rules::ExecutableAction::UploadAlarm: {
+                    if (!scheduled.alarmContextValid) {
+                        ++ruleUnsupportedActions_;
+                        break;
+                    }
+
+                    uint8_t payload[32] = {0};
+                    size_t written = 0;
+                    if (lorawan::FPort85Alarm::encode(
+                            scheduled.alarmChannel,
+                            0,
+                            scheduled.alarmValue,
+                            scheduled.alarmKind,
+                            scheduled.alarmChangeValue,
+                            payload,
+                            sizeof(payload),
+                            written) != lorawan::EncodeStatus::Ok ||
+                        written == 0) {
+                        ++ruleAlarmEncodeFailures_;
+                        break;
+                    }
+
+                    TransportEnvelope envelope;
+                    envelope.endpoint = lorawan::kCompatibilityFPort;
+                    envelope.payload = payload;
+                    envelope.length = written;
+                    envelope.confirmed = false;
+                    if (lora_.send(envelope)) {
+                        ++ruleActionsExecuted_;
+                    } else {
+                        ++ruleActionSendFailures_;
+                    }
+                    break;
+                }
                 case rules::ExecutableAction::Reboot:
                     rebootRequested_ = true;
                     ++ruleActionsExecuted_;
@@ -1662,7 +1774,7 @@ private:
     rules::StoredFrame ruleReplyFrames_[rules::kRuleFrameSlots];
     size_t ruleReplyCount_ = 0;
     size_t ruleReplyCursor_ = 0;
-    ScheduledRuleAction scheduledRuleActions_[rules::kRuleCount * 3U];
+    ScheduledRuleAction scheduledRuleActions_[rules::kRuleCount * 3U * 2U];
     uint32_t lastRuleMinuteKey_[rules::kRuleCount] = {0};
     rules::ChannelConditionRuntime channelRuleRuntime_[rules::kRuleCount];
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
@@ -1710,6 +1822,8 @@ private:
     uint32_t ruleRawRs485Failures_ = 0;
     uint32_t ruleServerMessagesMatched_ = 0;
     uint32_t ruleChannelTriggers_ = 0;
+    uint32_t ruleChannelReleases_ = 0;
+    uint32_t ruleAlarmEncodeFailures_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
