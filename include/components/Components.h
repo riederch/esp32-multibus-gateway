@@ -39,44 +39,7 @@ public:
     size_t pointCount() const override { return 0; }
     bool describePoint(size_t, DataPointDescriptor&) const override { return false; }
     bool readPoint(const String&, DataValue&) override { return false; }
-    bool writePoint(const String& pointId, const DataValue& value) override {
-        if (mode_ != ModbusMode::Master || !active_ || !value.valid ||
-            pendingWrite_.queued || writeInFlight_) {
-            return false;
-        }
-
-        uint8_t slot = 0;
-        uint8_t registerIndex = 0;
-        if (!parsePointId(pointId, slot, registerIndex)) return false;
-
-        const modbus::ChannelConfig* channel = channelForSlot(slot);
-        if (channel == nullptr || registerIndex >= channel->quantity ||
-            !modbus::ModbusRtuCodec::writableType(channel->dataType)) {
-            return false;
-        }
-
-        modbus::DecodedScalar scalar;
-        if (!dataValueToScalar(*channel, value, scalar)) return false;
-
-        // Validate the full request before accepting it into the asynchronous queue.
-        uint8_t request[17] = {0};
-        size_t written = 0;
-        if (modbus::ModbusRtuCodec::buildWriteRequest(
-                *channel, registerIndex, scalar, request, sizeof(request), written) !=
-                modbus::RtuDecodeStatus::Ok) {
-            return false;
-        }
-
-        pendingWrite_ = PendingWrite{};
-        pendingWrite_.queued = true;
-        pendingWrite_.channel = *channel;
-        pendingWrite_.registerIndex = registerIndex;
-        pendingWrite_.value = scalar;
-        return true;
-    }
-
-    uint32_t successfulWrites() const { return successfulWrites_; }
-    uint32_t failedWrites() const { return failedWrites_; }
+    bool writePoint(const String&, const DataValue&) override { return false; }
 
 private:
     VictronMode mode_ = VictronMode::Disabled;
@@ -462,7 +425,46 @@ public:
         return false;
     }
 
-    bool writePoint(const String&, const DataValue&) override { return false; }
+    bool writePoint(const String& pointId, const DataValue& value) override {
+        if (mode_ != ModbusMode::Master || !active_ || !value.valid ||
+            pendingWrite_.queued || writeInFlight_) {
+            return false;
+        }
+
+        uint8_t slot = 0;
+        uint8_t registerIndex = 0;
+        if (!parsePointId(pointId, slot, registerIndex)) return false;
+
+        const modbus::ChannelConfig* channel = channelForSlot(slot);
+        if (channel == nullptr || registerIndex >= channel->quantity ||
+            !modbus::ModbusRtuCodec::writableType(channel->dataType)) {
+            return false;
+        }
+
+        modbus::DecodedScalar scalar;
+        if (!dataValueToScalar(*channel, value, scalar)) return false;
+
+        // Validate the full request before accepting it into the asynchronous queue.
+        uint8_t request[17] = {0};
+        size_t written = 0;
+        if (modbus::ModbusRtuCodec::buildWriteRequest(
+                *channel, registerIndex, scalar, request, sizeof(request), written) !=
+                modbus::RtuDecodeStatus::Ok) {
+            return false;
+        }
+
+        pendingWrite_ = PendingWrite{};
+        pendingWrite_.queued = true;
+        pendingWrite_.channel = *channel;
+        pendingWrite_.registerIndex = registerIndex;
+        pendingWrite_.value = scalar;
+        return true;
+    }
+
+    uint32_t successfulWrites() const { return successfulWrites_; }
+    uint32_t failedWrites() const { return failedWrites_; }
+
+
 
     bool hasValidCache(uint8_t slot) const {
         return slot < modbus::kCompatibilitySlotCount && cache_[slot].valid;
