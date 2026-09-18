@@ -28,6 +28,7 @@ For device identifier `multibus-a1b2c3` and the default prefix:
 - availability: `multibus/multibus-a1b2c3/status`
 - channel state: `multibus/multibus-a1b2c3/channels/<id>/state`
 - channel command: `multibus/multibus-a1b2c3/channels/<id>/set`
+- event stream: `multibus/multibus-a1b2c3/events`
 
 Availability is retained. The client publishes `online` after connecting and
 uses retained `offline` as its MQTT last will.
@@ -60,6 +61,30 @@ Possible `type` values are:
 
 Only enabled ChannelRegistry bindings with a currently valid DataSource value
 are published.
+
+## Events
+
+Core events are published immediately and are never retained. The MQTT consumer
+uses an independent EventBus cursor, so publishing events does not interfere
+with future LoRaWAN, Web UI or history consumers.
+
+Example:
+
+```json
+{
+  "sequence": 42,
+  "timestamp": 1789761600,
+  "severity": "warning",
+  "source": "modbus",
+  "type": "poll-failure",
+  "detail": "slot=3"
+}
+```
+
+The in-memory Core event ring is bounded. If MQTT remains unavailable long
+enough for old events to be overwritten, the first subsequent event includes
+`missed_before` with the number of events no longer available. The MQTT cursor
+advances only after a successful publish.
 
 ## Commands
 

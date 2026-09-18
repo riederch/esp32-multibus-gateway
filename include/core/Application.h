@@ -182,6 +182,8 @@ public:
                 &Application::mqttReadThunk,
                 &Application::mqttDescribeThunk,
                 &Application::mqttCommandThunk,
+                &Application::mqttNextEventThunk,
+                &Application::mqttMissedEventThunk,
                 this)) {
             Serial.println("Failed to initialize MQTT service.");
             return false;
@@ -196,6 +198,7 @@ public:
             capabilities_.add("transport.mqtt");
             capabilities_.add("mqtt.publish");
             capabilities_.add("mqtt.commands");
+            capabilities_.add("mqtt.events");
         }
         if (network_.apActive()) capabilities_.add("network.ap");
         if (network_.clientConnected()) capabilities_.add("network.client");
@@ -334,6 +337,18 @@ private:
                                   DataPointDescriptor& descriptor) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->describeBoundChannel(binding, descriptor);
+    }
+
+    static bool mqttNextEventThunk(void* context,
+                                   uint64_t& cursor,
+                                   EventRecord& event) {
+        if (context == nullptr) return false;
+        return static_cast<Application*>(context)->events_.next(cursor, event);
+    }
+
+    static uint64_t mqttMissedEventThunk(void* context, uint64_t cursor) {
+        if (context == nullptr) return 0;
+        return static_cast<Application*>(context)->events_.missedSince(cursor);
     }
 
     static bool mqttCommandThunk(void* context,
