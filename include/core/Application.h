@@ -183,11 +183,15 @@ public:
         lora_.loop();
         processHistoryNetworkState();
         modbus_.loop();
+        const bool passThroughHandled = processModbusPassThroughResponse();
         captureModbusCompatibilitySample();
         processHistoryStorage();
-        const bool queryActive = processHistoryQuery();
-        const bool retransmissionActive = !queryActive && processHistoryRetransmission();
-        if (!queryActive && !retransmissionActive) processModbusCompatibilityReport();
+        const bool queryActive = !passThroughHandled && processHistoryQuery();
+        const bool retransmissionActive =
+            !passThroughHandled && !queryActive && processHistoryRetransmission();
+        if (!passThroughHandled && !queryActive && !retransmissionActive) {
+            processModbusCompatibilityReport();
+        }
         gnss_.loop();
         if (rebootRequested_) {
             delay(20);
@@ -613,6 +617,28 @@ private:
         ++historySnapshotsStored_;
     }
 
+    bool processModbusPassThroughResponse() {
+        ModbusComponent::RawCompletion completion;
+        if (!modbus_.takeRawCompletion(completion)) return false;
+        if (!completion.success || completion.length == 0) {
+            ++passThroughFailures_;
+            return true;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = modbus_.modbusMasterSettings().passThroughPort;
+        envelope.payload = completion.payload;
+        envelope.length = completion.length;
+        envelope.confirmed = false;
+
+        if (lora_.send(envelope)) {
+            ++passThroughResponsesSent_;
+        } else {
+            ++passThroughFailures_;
+        }
+        return true;
+    }
+
     void processModbusCompatibilityReport() {
         if (config_.components.lora != LoRaMode::LoRaWAN || !lora_.active()) return;
 
@@ -660,7 +686,17 @@ private:
     }
 
     bool handleLoRaDownlink(uint8_t fport, const uint8_t* payload, size_t length) {
-        if (fport != lorawan::kCompatibilityFPort || payload == nullptr || length == 0) return false;
+        if (payload == nullptr || length == 0) return false;
+
+        if (fport != lorawan::kCompatibilityFPort) {
+            const auto& settings = modbus_.modbusMasterSettings();
+            if (config_.components.modbus == ModbusMode::Master &&
+                settings.passThroughMode == modbus::PassThroughMode::Active &&
+                fport == settings.passThroughPort) {
+                return modbus_.queueRawRequest(payload, length);
+            }
+            return false;
+        }
 
         std::vector<ParsedCommand> commands;
         size_t offset = 0;
@@ -1192,6 +1228,8 @@ private:
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
+    uint32_t passThroughResponsesSent_ = 0;
+    uint32_t passThroughFailures_ = 0;
     uint32_t nextHistorySnapshotAtMs_ = 0;
     uint32_t historySnapshotsStored_ = 0;
     uint32_t historySnapshotsSkippedNoTime_ = 0;
