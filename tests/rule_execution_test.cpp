@@ -241,7 +241,24 @@ static void testChangeRecentCondition() {
     assert(evaluateChannelCondition(plan, value, 300, runtime));
 }
 
+static void testRs485CommandCondition() {
+    const uint8_t frameData[] = {
+        0xf9, 0x7d, 0x81, 0x13,
+        0x04, 0x01, 0x03, 0x00, 0x02
+    };
+    const StoredFrame condition = frame(frameData, sizeof(frameData));
+
+    const uint8_t matching[] = {0x01, 0x03, 0x00, 0x02};
+    assert(multibus::rules::matchesRs485CommandCondition(
+        condition, matching, sizeof(matching)));
+
+    const uint8_t different[] = {0x01, 0x03, 0x00, 0x03};
+    assert(!multibus::rules::matchesRs485CommandCondition(
+        condition, different, sizeof(different)));
+}
+
 int main() {
+    testRs485CommandCondition();
     testDocumentedAboveChannelCondition();
     testBooleanImmediateCondition();
     testChangeRecentCondition();
