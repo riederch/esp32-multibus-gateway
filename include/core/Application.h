@@ -198,6 +198,7 @@ public:
         updateCompatibilityConnectionState();
         processHistoryNetworkState();
         modbus_.loop();
+        processPassiveRs485Frame();
         const bool passThroughHandled = processModbusPassThroughResponse();
         const bool basicInfoHandled = !passThroughHandled && processCompatibilityBasicInfo();
         captureModbusCompatibilitySample();
@@ -298,6 +299,23 @@ private:
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
+    }
+
+    void processPassiveRs485Frame() {
+        ModbusComponent::PassiveFrame frame;
+        if (!modbus_.takePassiveFrame(frame) || frame.length == 0) return;
+
+        for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+            const rules::RuleRecord* record = ruleState_.rule(id);
+            if (record == nullptr || !record->enabled) continue;
+            if (!rules::matchesRs485CommandCondition(
+                    record->frames[0], frame.payload, frame.length)) {
+                continue;
+            }
+
+            scheduleRuleActions(id, *record);
+            ++ruleRs485Triggers_;
+        }
     }
 
     void evaluateChannelRules(const ModbusComponent::PollCompletion& completion) {
@@ -1822,6 +1840,7 @@ private:
     uint32_t ruleRawRs485Failures_ = 0;
     uint32_t ruleServerMessagesMatched_ = 0;
     uint32_t ruleChannelTriggers_ = 0;
+    uint32_t ruleRs485Triggers_ = 0;
     uint32_t ruleChannelReleases_ = 0;
     uint32_t ruleAlarmEncodeFailures_ = 0;
     bool historyQueryActive_ = false;
