@@ -76,7 +76,7 @@ public:
     }
 
     bool connected() const {
-        return config_ != nullptr && config_->enabled && connected_ && client_.connected();
+        return config_ != nullptr && config_->enabled && connected_;
     }
 
     uint32_t publishes() const { return publishes_; }
