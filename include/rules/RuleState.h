@@ -8,7 +8,7 @@ namespace multibus::rules {
 
 constexpr size_t kRuleCount = 16;
 constexpr size_t kRuleFrameSlots = 4;
-constexpr size_t kMaxRuleFrameLength = 57;
+constexpr size_t kMaxRuleFrameLength = 58;
 
 struct StoredFrame {
     uint8_t length = 0;
