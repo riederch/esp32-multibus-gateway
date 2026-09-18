@@ -101,6 +101,16 @@ static void testActions() {
     assert(rawPlan.payloadLength == 2);
     assert(rawPlan.payload[0] == 0x01 && rawPlan.payload[1] == 0x03);
 
+    const uint8_t alarm[] = {
+        0xf9, 0x7d, 0x81, 0x95,
+        0xd0, 0x07, 0x00, 0x00,
+        0x01
+    };
+    const ActionPlan alarmPlan = decodeExecutableAction(frame(alarm, sizeof(alarm)));
+    assert(alarmPlan.action == ExecutableAction::UploadAlarm);
+    assert(alarmPlan.delayMs == 2000);
+    assert(alarmPlan.thresholdReleaseEnabled);
+
     const uint8_t reboot[] = {0xf9, 0x7d, 0x81, 0xa6, 0x00, 0x00, 0x00, 0x00};
     const ActionPlan rebootPlan = decodeExecutableAction(frame(reboot, sizeof(reboot)));
     assert(rebootPlan.action == ExecutableAction::Reboot);
