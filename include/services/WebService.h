@@ -27,8 +27,8 @@ public:
         network_ = &network;
         events_ = &events;
 
-        const char* headers[] = {"Cookie"};
-        server_.collectHeaders(headers, 1);
+        const char* headers[] = {"Cookie", "X-CSRF-Token"};
+        server_.collectHeaders(headers, 2);
 
         server_.on("/", HTTP_GET, [this]() { handleRoot(); });
         server_.on("/login", HTTP_POST, [this]() { handleLogin(); });
@@ -70,14 +70,36 @@ private:
 
     bool authenticated() {
         if (sessionToken_.isEmpty()) return false;
+
+        const uint32_t now = millis();
+        if (static_cast<uint32_t>(now - sessionCreatedAt_) > kSessionMaxLifetimeMs ||
+            static_cast<uint32_t>(now - sessionLastActivityAt_) > kSessionIdleTimeoutMs) {
+            invalidateSession();
+            return false;
+        }
+
         const String cookie = server_.header("Cookie");
-        return cookie.indexOf("MBSESSION=" + sessionToken_) >= 0;
+        if (cookie.indexOf("MBSESSION=" + sessionToken_) < 0) return false;
+        sessionLastActivityAt_ = now;
+        return true;
     }
 
     bool requireAuth() {
         if (authenticated()) return true;
         server_.send(401, "text/plain", "Authentication required");
         return false;
+    }
+
+    bool requireCsrf() {
+        if (!requireAuth()) return false;
+
+        String supplied = server_.header("X-CSRF-Token");
+        if (supplied.isEmpty() && server_.hasArg("csrf")) supplied = server_.arg("csrf");
+        if (csrfToken_.isEmpty() || supplied != csrfToken_) {
+            server_.send(403, "text/plain", "CSRF validation failed");
+            return false;
+        }
+        return true;
     }
 
     static String randomToken() {
@@ -88,6 +110,24 @@ private:
         }
         token[32] = '\0';
         return String(token);
+    }
+
+    void createSession() {
+        sessionToken_ = randomToken();
+        csrfToken_ = randomToken();
+        sessionCreatedAt_ = millis();
+        sessionLastActivityAt_ = sessionCreatedAt_;
+    }
+
+    void invalidateSession() {
+        sessionToken_ = "";
+        csrfToken_ = "";
+        sessionCreatedAt_ = 0;
+        sessionLastActivityAt_ = 0;
+    }
+
+    String csrfField() const {
+        return "<input type='hidden' name='csrf' value='" + csrfToken_ + "'>";
     }
 
     void setSessionCookie() {
@@ -104,6 +144,7 @@ private:
             html += "<h1>MultiBus Gateway</h1><form method='post' action='/login'>"
                     "<label>Administrator password <input type='password' name='password' required autofocus></label>"
                     "<button type='submit'>Login</button></form></body></html>";
+            server_.sendHeader("Cache-Control", "no-store");
             server_.send(200, "text/html", html);
             return;
         }
@@ -119,7 +160,7 @@ private:
         html += "<p>Network: <code>" + String(network_->apActive() ? "AP" : "client") + "</code> &nbsp; ";
         html += "Address: <code>" + network_->address().toString() + "</code></p>";
 
-        html += "<fieldset><legend>Components</legend><form method='post' action='/api/config/components'>";
+        html += "<fieldset><legend>Components</legend><form method='post' action='/api/config/components'>" + csrfField();
         html += select("victron", "Victron", {{"0","Disabled"},{"1","Enabled"}},
                        config_->components.victron == VictronMode::Enabled ? "1" : "0");
         html += select("lora", "LoRa", {{"0","Disabled"},{"W","LoRaWAN"}}, toModeValue(config_->components.lora));
@@ -128,14 +169,14 @@ private:
                        config_->components.gnss == GnssMode::Enabled ? "1" : "0");
         html += "<button type='submit'>Save components</button></form></fieldset>";
 
-        html += "<fieldset><legend>Wi-Fi client</legend><form method='post' action='/api/config/network'>"
+        html += "<fieldset><legend>Wi-Fi client</legend><form method='post' action='/api/config/network'>" + csrfField() +
                 "<label>SSID <input name='ssid' value='" + escape(config_->network.ssid) + "' required></label>"
                 "<label>Password <input type='password' name='password' placeholder='leave empty to keep current'></label>"
                 "<label>Hostname <input name='hostname' value='" + escape(config_->network.hostname) + "'></label>"
                 "<label>Friendly name <input name='friendly' value='" + escape(config_->network.friendlyName) + "'></label>"
                 "<button type='submit'>Save network and reboot</button></form></fieldset>";
 
-        html += "<fieldset><legend>MQTT</legend><form method='post' action='/api/config/mqtt'>"
+        html += "<fieldset><legend>MQTT</legend><form method='post' action='/api/config/mqtt'>" + csrfField() +
                 "<label><input type='checkbox' name='enabled' value='1'" +
                 String(config_->mqtt.enabled ? " checked" : "") +
                 "> Enable MQTT</label>"
@@ -172,10 +213,13 @@ private:
                 "<button type='button' onclick='restoreBackup()'>Upload and restore</button>"
                 "<pre id='restoreStatus'></pre></fieldset>";
 
-        html += "<form method='get' action='/change-password'><button>Change admin password</button></form> "
-                "<form method='post' action='/logout' style='display:inline'><button>Logout</button></form> "
-                "<form method='post' action='/api/reboot' style='display:inline'><button>Reboot</button></form>";
+        html += "<form method='get' action='/change-password'><button>Change admin password</button></form> ";
+        html += "<form method='post' action='/logout' style='display:inline'>" + csrfField() +
+                "<button>Logout</button></form> ";
+        html += "<form method='post' action='/api/reboot' style='display:inline'>" + csrfField() +
+                "<button>Reboot</button></form>";
         html += "<script>"
+                "const csrfToken='" + csrfToken_ + "';"
                 "let eventAfter=0,eventLines=[];"
                 "async function loadEvents(){"
                 "try{const r=await fetch('/api/events?after='+eventAfter,{cache:'no-store'});"
@@ -191,10 +235,11 @@ private:
                 "}catch(e){document.getElementById('eventNotice').textContent='Event API unavailable';}}"
                 "async function restoreBackup(){const f=document.getElementById('restoreFile').files[0];"
                 "if(!f)return;const s=document.getElementById('restoreStatus');s.textContent='Uploading...';"
-                "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});"
+                "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:await f.text()});"
                 "s.textContent=await r.text();}"
                 "loadEvents();setInterval(loadEvents,5000);"
                 "</script></body></html>";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "text/html", html);
     }
 
@@ -215,14 +260,15 @@ private:
         }
 
         failedLogins_ = 0;
-        sessionToken_ = randomToken();
+        createSession();
         setSessionCookie();
         server_.sendHeader("Location", security_->adminInitialized() ? "/" : "/change-password");
         server_.send(303, "text/plain", "OK");
     }
 
     void handleLogout() {
-        sessionToken_ = "";
+        if (!requireCsrf()) return;
+        invalidateSession();
         clearSessionCookie();
         server_.sendHeader("Location", "/");
         server_.send(303, "text/plain", "Logged out");
@@ -232,22 +278,23 @@ private:
         if (!requireAuth()) return;
         String html = htmlHead("Change password");
         html += "<h1>Set administrator password</h1>"
-                "<form method='post' action='/change-password'>"
+                "<form method='post' action='/change-password'>" + csrfField() +
                 "<label>New password <input type='password' name='password' minlength='10' required></label>"
                 "<label>Repeat password <input type='password' name='confirm' minlength='10' required></label>"
                 "<button type='submit'>Save password</button></form></body></html>";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "text/html", html);
     }
 
     void handleChangePassword() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
         if (!server_.hasArg("password") || !server_.hasArg("confirm") ||
             server_.arg("password") != server_.arg("confirm") ||
             !security_->setAdminPassword(server_.arg("password"))) {
             server_.send(400, "text/plain", "Password must match and contain at least 10 characters.");
             return;
         }
-        sessionToken_ = randomToken();
+        createSession();
         setSessionCookie();
         server_.sendHeader("Location", "/");
         server_.send(303, "text/plain", "Password changed");
@@ -265,6 +312,7 @@ private:
         body += "\"gnss\":\"" + String(toString(config_->components.gnss)) + "\",";
         body += "\"mqtt_enabled\":" + String(config_->mqtt.enabled ? "true" : "false") + ",";
         body += "\"mqtt_host\":\"" + jsonEscape(config_->mqtt.host) + "\"}";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "application/json", body);
     }
 
@@ -343,7 +391,7 @@ private:
     }
 
     void handleComponentConfig() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
         AppConfig next = config_->components;
         next.victron = server_.arg("victron") == "1" ? VictronMode::Enabled : VictronMode::Disabled;
         next.lora = server_.arg("lora") == "W" ? LoRaMode::LoRaWAN : LoRaMode::Disabled;
@@ -365,7 +413,7 @@ private:
     }
 
     void handleNetworkConfig() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
         if (!server_.hasArg("ssid") || server_.arg("ssid").isEmpty()) {
             server_.send(400, "text/plain", "SSID is required");
             return;
@@ -405,7 +453,7 @@ private:
     }
 
     void handleMqttConfig() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
 
         MqttConfig next = config_->mqtt;
         next.enabled = server_.hasArg("enabled") && server_.arg("enabled") == "1";
@@ -464,7 +512,7 @@ private:
     }
 
     void handleBackupRestore() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
         const String body = server_.arg("plain");
         if (body.isEmpty()) {
             server_.send(400, "text/plain", "Backup payload is empty");
@@ -484,14 +532,14 @@ private:
         }
 
         *config_ = restored;
-        sessionToken_ = randomToken();
+        createSession();
         setSessionCookie();
         server_.send(200, "text/plain", "Backup restored successfully. Rebooting...");
         scheduleReboot();
     }
 
     void handleReboot() {
-        if (!requireAuth()) return;
+        if (!requireCsrf()) return;
         server_.send(200, "text/plain", "Rebooting...");
         scheduleReboot();
     }
@@ -559,7 +607,13 @@ private:
     SecurityStore* security_ = nullptr;
     NetworkService* network_ = nullptr;
     EventBus<32>* events_ = nullptr;
+    static constexpr uint32_t kSessionIdleTimeoutMs = 30UL * 60UL * 1000UL;
+    static constexpr uint32_t kSessionMaxLifetimeMs = 12UL * 60UL * 60UL * 1000UL;
+
     String sessionToken_;
+    String csrfToken_;
+    uint32_t sessionCreatedAt_ = 0;
+    uint32_t sessionLastActivityAt_ = 0;
     uint8_t failedLogins_ = 0;
     uint32_t lockUntil_ = 0;
     uint32_t rebootAt_ = 0;

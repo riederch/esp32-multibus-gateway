@@ -133,8 +133,6 @@ Validate:
 Validate/harden:
 
 - password KDF/work factor
-- session lifecycle
-- CSRF protection
 - login throttling
 - backup encryption
 - HTTPS/certificate strategy
