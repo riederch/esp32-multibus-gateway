@@ -31,6 +31,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_codec_test.cpp -o /tmp/fport85_codec_test
           /tmp/fport85_codec_test
 
+      - name: Run FPort 85 basic information tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_basic_info_test.cpp -o /tmp/fport85_basic_info_test
+          /tmp/fport85_basic_info_test
+
       - name: Run FPort 85 Modbus uplink tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_modbus_uplink_test.cpp -o /tmp/fport85_modbus_uplink_test

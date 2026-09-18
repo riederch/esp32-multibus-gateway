@@ -13,6 +13,7 @@
 #include "SecurityStore.h"
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
+#include "lorawan/FPort85BasicInfo.h"
 #include "history/HistorySettings.h"
 #include "history/HistorySettingsStore.h"
 #include "history/HistoryRetransmissionState.h"
@@ -191,16 +192,22 @@ public:
         web_.loop();
         victron_.loop();
         lora_.loop();
+        updateCompatibilityConnectionState();
         processHistoryNetworkState();
         modbus_.loop();
         const bool passThroughHandled = processModbusPassThroughResponse();
+        const bool basicInfoHandled = !passThroughHandled && processCompatibilityBasicInfo();
         captureModbusCompatibilitySample();
         processHistoryStorage();
-        const bool ruleReplyActive = !passThroughHandled && processRuleReply();
-        const bool queryActive = !passThroughHandled && !ruleReplyActive && processHistoryQuery();
+        const bool ruleReplyActive =
+            !passThroughHandled && !basicInfoHandled && processRuleReply();
+        const bool queryActive =
+            !passThroughHandled && !basicInfoHandled && !ruleReplyActive && processHistoryQuery();
         const bool retransmissionActive =
-            !passThroughHandled && !ruleReplyActive && !queryActive && processHistoryRetransmission();
-        if (!passThroughHandled && !ruleReplyActive && !queryActive && !retransmissionActive) {
+            !passThroughHandled && !basicInfoHandled && !ruleReplyActive &&
+            !queryActive && processHistoryRetransmission();
+        if (!passThroughHandled && !basicInfoHandled && !ruleReplyActive &&
+            !queryActive && !retransmissionActive) {
             processModbusCompatibilityReport();
         }
         gnss_.loop();
@@ -287,6 +294,73 @@ private:
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
         if (context == nullptr) return false;
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
+    }
+
+    void updateCompatibilityConnectionState() {
+        const bool connected = lora_.connected();
+        if (!compatibilityConnectionInitialized_) {
+            compatibilityConnectionInitialized_ = true;
+            compatibilityWasConnected_ = connected;
+            if (connected) compatibilityBasicInfoPending_ = true;
+            return;
+        }
+
+        if (!compatibilityWasConnected_ && connected) {
+            compatibilityBasicInfoPending_ = true;
+        }
+        compatibilityWasConnected_ = connected;
+    }
+
+    bool processCompatibilityBasicInfo() {
+        if (!compatibilityBasicInfoPending_ || !lora_.connected()) return false;
+
+        lorawan::BasicInfo info;
+        const uint64_t mac = hardwareMac48();
+        info.serialNumber[0] = 0x02;
+        info.serialNumber[1] = static_cast<uint8_t>((mac >> 40U) & 0xffU);
+        info.serialNumber[2] = static_cast<uint8_t>((mac >> 32U) & 0xffU);
+        info.serialNumber[3] = static_cast<uint8_t>((mac >> 24U) & 0xffU);
+        info.serialNumber[4] = static_cast<uint8_t>((mac >> 16U) & 0xffU);
+        info.serialNumber[5] = static_cast<uint8_t>((mac >> 8U) & 0xffU);
+        info.serialNumber[6] = static_cast<uint8_t>(mac & 0xffU);
+        info.serialNumber[7] = 0x01;
+        info.protocolVersion = 0x01;
+        info.tslMajor = 0x01;
+        info.tslMinor = 0x00;
+        info.hardwareMajor = 0x04;
+        info.hardwareMinor = 0x20;
+        info.softwareMajor = 0x00;
+        info.softwareMinor = 0x00;
+        info.deviceType = config_.lorawan.classC ? 0x02 : 0x00;
+
+        uint8_t payload[lorawan::FPort85BasicInfo::kBasicInfoWithResetLength] = {0};
+        size_t written = 0;
+        if (lorawan::FPort85BasicInfo::encode(
+                info,
+                compatibilityResetEventPending_,
+                payload,
+                sizeof(payload),
+                written) != lorawan::EncodeStatus::Ok ||
+            written == 0) {
+            ++compatibilityBasicInfoEncodeFailures_;
+            return true;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+
+        if (!lora_.send(envelope)) {
+            ++compatibilityBasicInfoSendFailures_;
+            return true;
+        }
+
+        compatibilityBasicInfoPending_ = false;
+        compatibilityResetEventPending_ = false;
+        ++compatibilityBasicInfoSent_;
+        return true;
     }
 
     void captureModbusCompatibilitySample() {
@@ -1409,6 +1483,9 @@ private:
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
+    uint32_t compatibilityBasicInfoSent_ = 0;
+    uint32_t compatibilityBasicInfoEncodeFailures_ = 0;
+    uint32_t compatibilityBasicInfoSendFailures_ = 0;
     uint32_t passThroughResponsesSent_ = 0;
     uint32_t passThroughFailures_ = 0;
     uint32_t nextHistorySnapshotAtMs_ = 0;
@@ -1434,6 +1511,10 @@ private:
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
     bool historyWasConnected_ = false;
+    bool compatibilityConnectionInitialized_ = false;
+    bool compatibilityWasConnected_ = false;
+    bool compatibilityBasicInfoPending_ = false;
+    bool compatibilityResetEventPending_ = true;
     bool rebootRequested_ = false;
 };
 
