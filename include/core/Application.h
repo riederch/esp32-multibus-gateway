@@ -185,8 +185,9 @@ public:
         modbus_.loop();
         captureModbusCompatibilitySample();
         processHistoryStorage();
-        const bool retransmissionActive = processHistoryRetransmission();
-        if (!retransmissionActive) processModbusCompatibilityReport();
+        const bool queryActive = processHistoryQuery();
+        const bool retransmissionActive = !queryActive && processHistoryRetransmission();
+        if (!queryActive && !retransmissionActive) processModbusCompatibilityReport();
         gnss_.loop();
         if (rebootRequested_) {
             delay(20);
@@ -212,6 +213,8 @@ private:
         DataStorage,
         DataRetransmission,
         RetransmissionInterval,
+        RetrievabilityInterval,
+        HistoryQuery,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -228,6 +231,8 @@ private:
         lorawan::DstSettingsCommand dstSettings;
         lorawan::HistoryToggleCommand historyToggle;
         lorawan::RetransmissionIntervalCommand retransmissionInterval;
+        lorawan::RetrievabilityIntervalCommand retrievabilityInterval;
+        lorawan::HistoryQueryCommand historyQuery;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -411,6 +416,154 @@ private:
         return true;
     }
 
+    bool sendHistoryQueryReply(uint8_t queryType, uint8_t status) {
+        uint8_t payload[3] = {0};
+        size_t written = 0;
+        if (lorawan::FPort85Codec::encodeHistoryQueryReply(
+                queryType, status, payload, sizeof(payload), written) != lorawan::EncodeStatus::Ok ||
+            written == 0) {
+            return false;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+        return lora_.send(envelope);
+    }
+
+    bool applyHistoryQueryCommand(const lorawan::HistoryQueryCommand& command) {
+        if (command.kind == lorawan::HistoryQueryKind::Stop) {
+            historyQueryActive_ = false;
+            historyQueryCount_ = 0;
+            historyQueryCursor_ = 0;
+            return true;
+        }
+
+        const uint8_t replyType =
+            command.kind == lorawan::HistoryQueryKind::TimePoint
+                ? lorawan::FPort85Codec::kHistoryPointType
+                : lorawan::FPort85Codec::kHistoryRangeType;
+
+        if (command.kind == lorawan::HistoryQueryKind::TimeRange &&
+            command.startUnix > command.endUnix) {
+            historyQueryActive_ = false;
+            return sendHistoryQueryReply(replyType, 0x01);
+        }
+
+        historyQueryCount_ = 0;
+        historyQueryCursor_ = 0;
+
+        if (command.kind == lorawan::HistoryQueryKind::TimePoint) {
+            bool found = false;
+            uint32_t closestTimestamp = 0;
+            uint64_t closestDistance = UINT64_MAX;
+            const uint64_t tolerance = reportScheduler_.settings().seconds;
+
+            for (size_t i = 0; i < historyRing_.size(); ++i) {
+                const lorawan::HistoricalRecord* record = historyRing_.oldest(i);
+                if (record == nullptr) continue;
+                const uint32_t ts = record->timestamp();
+                const uint64_t distance =
+                    ts >= command.startUnix
+                        ? static_cast<uint64_t>(ts - command.startUnix)
+                        : static_cast<uint64_t>(command.startUnix - ts);
+                if (distance <= tolerance && (!found || distance < closestDistance)) {
+                    found = true;
+                    closestDistance = distance;
+                    closestTimestamp = ts;
+                }
+            }
+
+            if (found) {
+                for (size_t i = 0; i < historyRing_.size() &&
+                                   historyQueryCount_ < history::kPersistentHistoryCapacity; ++i) {
+                    const lorawan::HistoricalRecord* record = historyRing_.oldest(i);
+                    if (record != nullptr && record->timestamp() == closestTimestamp) {
+                        historyQueryRecords_[historyQueryCount_++] = *record;
+                    }
+                }
+            }
+        } else {
+            for (size_t i = 0; i < historyRing_.size() &&
+                               historyQueryCount_ < history::kPersistentHistoryCapacity; ++i) {
+                const lorawan::HistoricalRecord* record = historyRing_.oldest(i);
+                if (record == nullptr) continue;
+                const uint32_t ts = record->timestamp();
+                if (ts >= command.startUnix && ts <= command.endUnix) {
+                    historyQueryRecords_[historyQueryCount_++] = *record;
+                }
+            }
+        }
+
+        if (historyQueryCount_ == 0) {
+            historyQueryActive_ = false;
+            return sendHistoryQueryReply(replyType, 0x02);
+        }
+
+        if (!sendHistoryQueryReply(replyType, 0x00)) {
+            historyQueryActive_ = false;
+            historyQueryCount_ = 0;
+            return false;
+        }
+
+        historyQueryActive_ = true;
+        nextHistoryQueryAtMs_ =
+            millis() + static_cast<uint32_t>(historySettings_.retrievabilityIntervalSeconds) * 1000UL;
+        return true;
+    }
+
+    bool processHistoryQuery() {
+        if (!historyQueryActive_ || !lora_.connected()) return false;
+
+        const uint32_t now = millis();
+        if (static_cast<int32_t>(now - nextHistoryQueryAtMs_) < 0) return false;
+
+        uint8_t payload[lorawan::kCompatibilityReportPayloadLimit] = {0};
+        size_t written = 0;
+        size_t recordsAdded = 0;
+        while (historyQueryCursor_ + recordsAdded < historyQueryCount_) {
+            if (written + lorawan::kHistoricalModbusRecordLength >
+                lorawan::kCompatibilityReportPayloadLimit) {
+                break;
+            }
+            memcpy(payload + written,
+                   historyQueryRecords_[historyQueryCursor_ + recordsAdded].payload,
+                   lorawan::kHistoricalModbusRecordLength);
+            written += lorawan::kHistoricalModbusRecordLength;
+            ++recordsAdded;
+        }
+
+        if (recordsAdded == 0) {
+            historyQueryActive_ = false;
+            return false;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+
+        nextHistoryQueryAtMs_ =
+            now + static_cast<uint32_t>(historySettings_.retrievabilityIntervalSeconds) * 1000UL;
+
+        if (!lora_.send(envelope)) {
+            ++historyQuerySendFailures_;
+            return true;
+        }
+
+        historyQueryCursor_ += recordsAdded;
+        ++historyQueryPacketsSent_;
+        if (historyQueryCursor_ >= historyQueryCount_) {
+            historyQueryActive_ = false;
+            historyQueryCount_ = 0;
+            historyQueryCursor_ = 0;
+        }
+        return true;
+    }
+
     void processHistoryStorage() {
         if (!historySettings_.storageEnabled) return;
 
@@ -580,6 +733,26 @@ private:
                     consumed == 0) {
                     return false;
                 }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRetrievabilityIntervalType) {
+                parsed.kind = ParsedCommandKind::RetrievabilityInterval;
+                if (lorawan::FPort85Codec::decodeRetrievabilityIntervalCommand(
+                        payload + offset, length - offset,
+                        parsed.retrievabilityInterval, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kHistoryQueryChannel &&
+                       (header.type == lorawan::FPort85Codec::kHistoryPointType ||
+                        header.type == lorawan::FPort85Codec::kHistoryRangeType ||
+                        header.type == lorawan::FPort85Codec::kHistoryStopType)) {
+                parsed.kind = ParsedCommandKind::HistoryQuery;
+                if (lorawan::FPort85Codec::decodeHistoryQueryCommand(
+                        payload + offset, length - offset,
+                        parsed.historyQuery, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
@@ -666,6 +839,12 @@ private:
                     break;
                 case ParsedCommandKind::RetransmissionInterval:
                     if (!applyRetransmissionIntervalCommand(command.retransmissionInterval)) return false;
+                    break;
+                case ParsedCommandKind::RetrievabilityInterval:
+                    if (!applyRetrievabilityIntervalCommand(command.retrievabilityInterval)) return false;
+                    break;
+                case ParsedCommandKind::HistoryQuery:
+                    if (!applyHistoryQueryCommand(command.historyQuery)) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
@@ -806,6 +985,15 @@ private:
         return true;
     }
 
+    bool applyRetrievabilityIntervalCommand(
+        const lorawan::RetrievabilityIntervalCommand& command) {
+        history::Settings updated = historySettings_;
+        updated.retrievabilityIntervalSeconds = command.seconds;
+        if (!history::validSettings(updated) || !historySettingsStore_.save(updated)) return false;
+        historySettings_ = updated;
+        return true;
+    }
+
     bool applyRetransmissionIntervalCommand(const lorawan::RetransmissionIntervalCommand& command) {
         history::Settings updated = historySettings_;
         updated.retransmissionIntervalSeconds = command.seconds;
@@ -943,10 +1131,11 @@ private:
         Serial.printf("  DST: %s, bias=%u min\n",
                       timeSettings_.dst.enabled ? "enabled" : "disabled",
                       static_cast<unsigned>(timeSettings_.dst.biasMinutes));
-        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, records=%u/%u, pending=%s\n",
+        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, query=%u s, records=%u/%u, pending=%s\n",
                       historySettings_.storageEnabled ? "enabled" : "disabled",
                       historySettings_.retransmissionEnabled ? "enabled" : "disabled",
                       static_cast<unsigned>(historySettings_.retransmissionIntervalSeconds),
+                      static_cast<unsigned>(historySettings_.retrievabilityIntervalSeconds),
                       static_cast<unsigned>(historyRing_.size()),
                       static_cast<unsigned>(historyRing_.capacity()),
                       historyRetransmissionState_.pending ? "yes" : "no");
@@ -1014,6 +1203,13 @@ private:
     uint32_t historyRetransmissionSendFailures_ = 0;
     uint32_t historyRetransmissionEncodeFailures_ = 0;
     uint32_t historyRetransmissionStateFailures_ = 0;
+    lorawan::HistoricalRecord historyQueryRecords_[history::kPersistentHistoryCapacity];
+    size_t historyQueryCount_ = 0;
+    size_t historyQueryCursor_ = 0;
+    uint32_t nextHistoryQueryAtMs_ = 0;
+    uint32_t historyQueryPacketsSent_ = 0;
+    uint32_t historyQuerySendFailures_ = 0;
+    bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
     bool historyWasConnected_ = false;

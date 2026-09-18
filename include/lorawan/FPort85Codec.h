@@ -66,6 +66,22 @@ struct RetransmissionIntervalCommand {
     uint16_t seconds = 600;
 };
 
+struct RetrievabilityIntervalCommand {
+    uint16_t seconds = 60;
+};
+
+enum class HistoryQueryKind : uint8_t {
+    TimePoint,
+    TimeRange,
+    Stop,
+};
+
+struct HistoryQueryCommand {
+    HistoryQueryKind kind = HistoryQueryKind::TimePoint;
+    uint32_t startUnix = 0;
+    uint32_t endUnix = 0;
+};
+
 struct DstSettingsCommand {
     bool enabled = false;
     uint8_t biasMinutes = 0;
@@ -116,6 +132,12 @@ public:
     static constexpr uint8_t kDataStorageType = 0x68;
     static constexpr uint8_t kDataRetransmissionType = 0x69;
     static constexpr uint8_t kRetransmissionIntervalType = 0x0D;
+    static constexpr uint8_t kRetrievabilityIntervalType = 0x0E;
+    static constexpr uint8_t kHistoryQueryChannel = 0xFD;
+    static constexpr uint8_t kHistoryReplyChannel = 0xFC;
+    static constexpr uint8_t kHistoryPointType = 0x6B;
+    static constexpr uint8_t kHistoryRangeType = 0x6C;
+    static constexpr uint8_t kHistoryStopType = 0x6D;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
@@ -141,6 +163,11 @@ public:
         if (header.channelId == kSystemChannel && header.type == kDataStorageType) return true;
         if (header.channelId == kSystemChannel && header.type == kDataRetransmissionType) return true;
         if (header.channelId == kModbusChannel && header.type == kRetransmissionIntervalType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRetrievabilityIntervalType) return true;
+        if (header.channelId == kHistoryQueryChannel &&
+            (header.type == kHistoryPointType ||
+             header.type == kHistoryRangeType ||
+             header.type == kHistoryStopType)) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
@@ -313,6 +340,82 @@ public:
         command.seconds = seconds;
         consumed = 4;
         return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRetrievabilityIntervalCommand(
+        const uint8_t* payload,
+        size_t length,
+        RetrievabilityIntervalCommand& command,
+        size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 4) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRetrievabilityIntervalType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        const uint16_t seconds = static_cast<uint16_t>(payload[2]) |
+                                 (static_cast<uint16_t>(payload[3]) << 8U);
+        if (seconds < 30 || seconds > 1200) return DecodeStatus::Invalid;
+
+        command = RetrievabilityIntervalCommand{};
+        command.seconds = seconds;
+        consumed = 4;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeHistoryQueryCommand(const uint8_t* payload,
+                                                  size_t length,
+                                                  HistoryQueryCommand& command,
+                                                  size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kHistoryQueryChannel) return DecodeStatus::Unsupported;
+
+        command = HistoryQueryCommand{};
+        if (payload[1] == kHistoryPointType) {
+            if (length < 6) return DecodeStatus::Truncated;
+            command.kind = HistoryQueryKind::TimePoint;
+            command.startUnix = readU32(payload + 2);
+            consumed = 6;
+            return DecodeStatus::Ok;
+        }
+
+        if (payload[1] == kHistoryRangeType) {
+            if (length < 10) return DecodeStatus::Truncated;
+            command.kind = HistoryQueryKind::TimeRange;
+            command.startUnix = readU32(payload + 2);
+            command.endUnix = readU32(payload + 6);
+            consumed = 10;
+            return DecodeStatus::Ok;
+        }
+
+        if (payload[1] == kHistoryStopType) {
+            if (payload[2] != 0xff) return DecodeStatus::Invalid;
+            command.kind = HistoryQueryKind::Stop;
+            consumed = 3;
+            return DecodeStatus::Ok;
+        }
+
+        return DecodeStatus::Unsupported;
+    }
+
+    static EncodeStatus encodeHistoryQueryReply(uint8_t queryType,
+                                               uint8_t status,
+                                               uint8_t* output,
+                                               size_t capacity,
+                                               size_t& written) {
+        written = 0;
+        if (queryType != kHistoryPointType && queryType != kHistoryRangeType) {
+            return EncodeStatus::Invalid;
+        }
+        if (status > 0x02) return EncodeStatus::Invalid;
+        if (output == nullptr || capacity < 3) return EncodeStatus::BufferTooSmall;
+
+        output[0] = kHistoryReplyChannel;
+        output[1] = queryType;
+        output[2] = status;
+        written = 3;
+        return EncodeStatus::Ok;
     }
 
     static DecodeStatus decodeRs485SettingsCommand(const uint8_t* payload,
@@ -575,6 +678,14 @@ public:
     static uint8_t slotToDownlinkChannelId(uint8_t slot) {
         return slot < modbus::kCompatibilitySlotCount ? static_cast<uint8_t>(slot + 1) : 0;
     }
+private:
+    static uint32_t readU32(const uint8_t* input) {
+        return static_cast<uint32_t>(input[0]) |
+               (static_cast<uint32_t>(input[1]) << 8U) |
+               (static_cast<uint32_t>(input[2]) << 16U) |
+               (static_cast<uint32_t>(input[3]) << 24U);
+    }
+
 };
 
 } // namespace lorawan
