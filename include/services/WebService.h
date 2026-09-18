@@ -150,6 +150,11 @@ private:
                 "> Enable Home Assistant discovery</label>"
                 "<label>Home Assistant discovery prefix <input name='ha_prefix' value='" +
                 escape(config_->mqtt.homeAssistantPrefix) + "' required></label>"
+                "<label><input type='checkbox' name='tls_enabled' value='1'" +
+                String(config_->mqtt.tlsEnabled ? " checked" : "") +
+                "> Enable TLS with CA verification</label>"
+                "<label>CA certificate (PEM)<br><textarea name='ca_certificate' rows='10' cols='72'>" +
+                escape(config_->mqtt.caCertificate) + "</textarea></label>"
                 "<button type='submit'>Save MQTT and reboot</button></form></fieldset>";
 
         html += "<fieldset><legend>Backup / Restore</legend>"
@@ -317,6 +322,11 @@ private:
         next.homeAssistantDiscovery =
             server_.hasArg("ha_discovery") && server_.arg("ha_discovery") == "1";
         next.homeAssistantPrefix = server_.arg("ha_prefix");
+        next.tlsEnabled =
+            server_.hasArg("tls_enabled") && server_.arg("tls_enabled") == "1";
+        if (server_.hasArg("ca_certificate")) {
+            next.caCertificate = server_.arg("ca_certificate");
+        }
 
         uint16_t port = 0;
         uint16_t publishInterval = 0;
