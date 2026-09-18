@@ -10,6 +10,8 @@ using multibus::lorawan::DecodeStatus;
 using multibus::lorawan::DstSettingsCommand;
 using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
+using multibus::lorawan::HistoryToggleCommand;
+using multibus::lorawan::RetransmissionIntervalCommand;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
 using multibus::lorawan::LnsTimeSyncCommand;
@@ -390,7 +392,64 @@ static void testDstSettingsRejectsInvalidEnabledTransition() {
     assert(consumed == 0);
 }
 
+static void testDataStorageEnableVector() {
+    const uint8_t payload[] = {0xff, 0x68, 0x01};
+    HistoryToggleCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryToggleCommand(
+        payload, sizeof(payload), FPort85Codec::kDataStorageType, command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.enabled);
+}
+
+static void testDataRetransmissionDisableVector() {
+    const uint8_t payload[] = {0xff, 0x69, 0x00};
+    HistoryToggleCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryToggleCommand(
+        payload, sizeof(payload), FPort85Codec::kDataRetransmissionType, command, consumed) == DecodeStatus::Ok);
+    assert(!command.enabled);
+}
+
+static void testHistoryToggleRejectsInvalidValue() {
+    const uint8_t payload[] = {0xff, 0x68, 0x02};
+    HistoryToggleCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryToggleCommand(
+        payload, sizeof(payload), FPort85Codec::kDataStorageType, command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
+static void testRetransmissionIntervalRange() {
+    {
+        const uint8_t payload[] = {0xf9, 0x0d, 0x58, 0x02}; // 600 s
+        RetransmissionIntervalCommand command;
+        size_t consumed = 0;
+        assert(FPort85Codec::decodeRetransmissionIntervalCommand(
+            payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+        assert(command.seconds == 600);
+    }
+    {
+        const uint8_t payload[] = {0xf9, 0x0d, 0x1d, 0x00}; // 29 s
+        RetransmissionIntervalCommand command;
+        size_t consumed = 0;
+        assert(FPort85Codec::decodeRetransmissionIntervalCommand(
+            payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    }
+    {
+        const uint8_t payload[] = {0xf9, 0x0d, 0xb1, 0x04}; // 1201 s
+        RetransmissionIntervalCommand command;
+        size_t consumed = 0;
+        assert(FPort85Codec::decodeRetransmissionIntervalCommand(
+            payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    }
+}
+
 int main() {
+    testDataStorageEnableVector();
+    testDataRetransmissionDisableVector();
+    testHistoryToggleRejectsInvalidValue();
+    testRetransmissionIntervalRange();
     testDstSettingsReferenceVector();
     testDstSettingsAllowsDisable();
     testDstSettingsRejectsInvalidEnabledTransition();

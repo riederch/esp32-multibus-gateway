@@ -12,6 +12,8 @@
 #include "SecurityStore.h"
 #include "components/Components.h"
 #include "lorawan/FPort85Codec.h"
+#include "history/HistorySettings.h"
+#include "history/HistorySettingsStore.h"
 #include "lorawan/FPort85ReportScheduler.h"
 #include "lorawan/FPort85ReportSettingsStore.h"
 #include "modbus/ModbusChannelStore.h"
@@ -50,6 +52,10 @@ public:
         }
         if (!timeSettingsStore_.begin()) {
             Serial.println("Failed to open time settings store.");
+            return false;
+        }
+        if (!historySettingsStore_.begin()) {
+            Serial.println("Failed to open history settings store.");
             return false;
         }
 
@@ -110,6 +116,10 @@ public:
         }
         if (!loadTimeSettings()) {
             Serial.println("Failed to load persisted time settings.");
+            return false;
+        }
+        if (!loadHistorySettings()) {
+            Serial.println("Failed to load persisted history settings.");
             return false;
         }
         if (!loadModbusChannels()) {
@@ -175,6 +185,9 @@ private:
         UtcTimezone,
         LnsTimeSync,
         DstSettings,
+        DataStorage,
+        DataRetransmission,
+        RetransmissionInterval,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -189,6 +202,8 @@ private:
         lorawan::UtcTimezoneCommand utcTimezone;
         lorawan::LnsTimeSyncCommand lnsTimeSync;
         lorawan::DstSettingsCommand dstSettings;
+        lorawan::HistoryToggleCommand historyToggle;
+        lorawan::RetransmissionIntervalCommand retransmissionInterval;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -205,6 +220,7 @@ private:
         modbusMasterSettingsStore_.clear();
         reportSettingsStore_.clear();
         timeSettingsStore_.clear();
+        historySettingsStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -314,6 +330,35 @@ private:
                     return false;
                 }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kDataStorageType) {
+                parsed.kind = ParsedCommandKind::DataStorage;
+                if (lorawan::FPort85Codec::decodeHistoryToggleCommand(
+                        payload + offset, length - offset,
+                        lorawan::FPort85Codec::kDataStorageType,
+                        parsed.historyToggle, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kDataRetransmissionType) {
+                parsed.kind = ParsedCommandKind::DataRetransmission;
+                if (lorawan::FPort85Codec::decodeHistoryToggleCommand(
+                        payload + offset, length - offset,
+                        lorawan::FPort85Codec::kDataRetransmissionType,
+                        parsed.historyToggle, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRetransmissionIntervalType) {
+                parsed.kind = ParsedCommandKind::RetransmissionInterval;
+                if (lorawan::FPort85Codec::decodeRetransmissionIntervalCommand(
+                        payload + offset, length - offset,
+                        parsed.retransmissionInterval, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
                 if (lorawan::FPort85Codec::decodePeriodicReportEnquiryCommand(
@@ -390,6 +435,15 @@ private:
                     break;
                 case ParsedCommandKind::DstSettings:
                     if (!applyDstSettingsCommand(command.dstSettings)) return false;
+                    break;
+                case ParsedCommandKind::DataStorage:
+                    if (!applyHistoryStorageCommand(command.historyToggle)) return false;
+                    break;
+                case ParsedCommandKind::DataRetransmission:
+                    if (!applyHistoryRetransmissionCommand(command.historyToggle)) return false;
+                    break;
+                case ParsedCommandKind::RetransmissionInterval:
+                    if (!applyRetransmissionIntervalCommand(command.retransmissionInterval)) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
@@ -492,6 +546,34 @@ private:
             }
         }
         return false;
+    }
+
+    bool applyHistoryStorageCommand(const lorawan::HistoryToggleCommand& command) {
+        history::Settings updated = historySettings_;
+        updated.storageEnabled = command.enabled;
+        if (!historySettingsStore_.save(updated)) return false;
+        historySettings_ = updated;
+        return true;
+    }
+
+    bool applyHistoryRetransmissionCommand(const lorawan::HistoryToggleCommand& command) {
+        history::Settings updated = historySettings_;
+        updated.retransmissionEnabled = command.enabled;
+        if (!historySettingsStore_.save(updated)) return false;
+        historySettings_ = updated;
+        return true;
+    }
+
+    bool applyRetransmissionIntervalCommand(const lorawan::RetransmissionIntervalCommand& command) {
+        history::Settings updated = historySettings_;
+        updated.retransmissionIntervalSeconds = command.seconds;
+        if (!history::validSettings(updated) || !historySettingsStore_.save(updated)) return false;
+        historySettings_ = updated;
+        return true;
+    }
+
+    bool loadHistorySettings() {
+        return historySettingsStore_.load(historySettings_);
     }
 
     bool applyDstSettingsCommand(const lorawan::DstSettingsCommand& command) {
@@ -616,6 +698,10 @@ private:
         Serial.printf("  DST: %s, bias=%u min\n",
                       timeSettings_.dst.enabled ? "enabled" : "disabled",
                       static_cast<unsigned>(timeSettings_.dst.biasMinutes));
+        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s\n",
+                      historySettings_.storageEnabled ? "enabled" : "disabled",
+                      historySettings_.retransmissionEnabled ? "enabled" : "disabled",
+                      static_cast<unsigned>(historySettings_.retransmissionIntervalSeconds));
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
@@ -650,6 +736,8 @@ private:
     lorawan::FPort85ReportScheduler reportScheduler_;
     time::SettingsStore timeSettingsStore_;
     time::Settings timeSettings_;
+    history::SettingsStore historySettingsStore_;
+    history::Settings historySettings_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;
