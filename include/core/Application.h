@@ -208,6 +208,7 @@ public:
             return false;
         }
 
+        emitCoreEvent("system", "boot", EventSeverity::Info);
         printStatus();
         return true;
     }
@@ -259,6 +260,24 @@ public:
     const EventBus<32>& events() const { return events_; }
 
 private:
+    static uint32_t currentEventTimestamp() {
+        const time_t now = ::time(nullptr);
+        if (now <= 0 || static_cast<uint64_t>(now) > UINT32_MAX) return 0;
+        return static_cast<uint32_t>(now);
+    }
+
+    bool emitCoreEvent(const char* source,
+                       const char* type,
+                       EventSeverity severity,
+                       const char* detail = "") {
+        if (!events_.emit(source, type, severity, currentEventTimestamp(), detail)) {
+            ++eventEmitFailures_;
+            return false;
+        }
+        ++eventsEmitted_;
+        return true;
+    }
+
     enum class ParsedCommandKind : uint8_t {
         ReportInterval,
         BasicControl,
@@ -581,12 +600,20 @@ private:
         if (!compatibilityConnectionInitialized_) {
             compatibilityConnectionInitialized_ = true;
             compatibilityWasConnected_ = connected;
-            if (connected) compatibilityBasicInfoPending_ = true;
+            if (connected) {
+                compatibilityBasicInfoPending_ = true;
+                emitCoreEvent("lorawan", "connected", EventSeverity::Info);
+            }
             return;
         }
 
-        if (!compatibilityWasConnected_ && connected) {
+        if (compatibilityWasConnected_ == connected) return;
+
+        if (connected) {
             compatibilityBasicInfoPending_ = true;
+            emitCoreEvent("lorawan", "connected", EventSeverity::Info);
+        } else {
+            emitCoreEvent("lorawan", "disconnected", EventSeverity::Warning);
         }
         compatibilityWasConnected_ = connected;
     }
@@ -648,6 +675,17 @@ private:
         if (!modbus_.takeCompletedPoll(completion)) return;
 
         evaluateChannelRules(completion);
+        if (!completion.success) {
+            char detail[96] = {0};
+            snprintf(
+                detail,
+                sizeof(detail),
+                "slot=%u status=%u exception=%u",
+                static_cast<unsigned>(completion.channel.slot),
+                static_cast<unsigned>(completion.status),
+                static_cast<unsigned>(completion.exceptionCode));
+            emitCoreEvent("modbus", "poll-failure", EventSeverity::Warning, detail);
+        }
         reportScheduler_.recordPoll(
             completion.channel,
             completion.success,
@@ -1021,6 +1059,19 @@ private:
                 memcpy(scheduled.payload, plan.payload, plan.payloadLength);
             }
         }
+
+        char detail[48] = {0};
+        snprintf(
+            detail,
+            sizeof(detail),
+            "rule=%u%s",
+            static_cast<unsigned>(ruleId),
+            releaseOnly ? " release" : "");
+        emitCoreEvent(
+            "rules",
+            releaseOnly ? "release" : "trigger",
+            EventSeverity::Info,
+            detail);
         ++ruleTriggers_;
     }
 
@@ -2012,6 +2063,8 @@ private:
     LoRaComponent lora_;
     ModbusComponent modbus_;
     GnssComponent gnss_;
+    uint32_t eventsEmitted_ = 0;
+    uint32_t eventEmitFailures_ = 0;
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
