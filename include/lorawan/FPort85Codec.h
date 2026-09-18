@@ -527,7 +527,10 @@ public:
                 if (payload[4] < 1 || payload[4] > 32) return DecodeStatus::Invalid;
                 const uint8_t mode = payload[5] & 0x0fU;
                 const uint8_t continueMode = (payload[5] >> 4U) & 0x0fU;
-                if (mode > 0x07 || continueMode > 0x01) return DecodeStatus::Invalid;
+                if (!((mode <= 0x04U) || mode == 0x06U || mode == 0x07U) ||
+                    continueMode > 0x01U) {
+                    return DecodeStatus::Invalid;
+                }
                 break;
             }
             case 0x13:
