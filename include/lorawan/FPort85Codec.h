@@ -171,7 +171,7 @@ public:
         const uint16_t raw = static_cast<uint16_t>(payload[2]) |
                              (static_cast<uint16_t>(payload[3]) << 8U);
         const int16_t minutes = static_cast<int16_t>(raw);
-        if (minutes < -720 || minutes > 840 || (minutes % 15) != 0) {
+        if (minutes < -720 || minutes > 840) {
             return DecodeStatus::Invalid;
         }
 
