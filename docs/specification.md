@@ -93,6 +93,35 @@ A channel references one source point and adds reporting, scaling, alarm, histor
 
 Transports carry channel/event/command data between the Core and external systems. LoRa is a transport component and is independent of Modbus, Victron and GNSS.
 
+### Core event bus
+
+Events are transient normalized records on a bounded multi-consumer ring. Each
+record contains:
+
+- monotonic sequence number
+- Unix timestamp when wall-clock time is available, otherwise `0`
+- severity: `info`, `warning` or `error`
+- source
+- event type
+- bounded detail text
+
+Consumers maintain independent sequence cursors. A slow consumer can detect how
+many records were overwritten before its next available sequence; one transport
+must never consume events on behalf of another.
+
+Initial producers include:
+
+- `system/boot`
+- `lorawan/connected`
+- `lorawan/disconnected`
+- `modbus/poll-failure`
+- `rules/trigger`
+- `rules/release`
+
+The EventBus is runtime infrastructure, not persistent history. Selected event
+classes may additionally be copied into the persistent history subsystem later.
+
+
 ## Modbus
 
 ### Master mode
