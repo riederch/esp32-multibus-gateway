@@ -71,6 +71,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_execution_test.cpp -o /tmp/rule_execution_test
           /tmp/rule_execution_test
 
+      - name: Run passive RS485 frame tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/passive_frame_assembler_test.cpp -o /tmp/passive_frame_assembler_test
+          /tmp/passive_frame_assembler_test
+
       - name: Run Modbus RTU codec tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/modbus_rtu_codec_test.cpp -o /tmp/modbus_rtu_codec_test
