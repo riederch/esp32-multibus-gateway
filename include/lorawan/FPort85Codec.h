@@ -376,7 +376,6 @@ public:
             if (length < 6) return DecodeStatus::Truncated;
             command.kind = HistoryQueryKind::TimePoint;
             command.startUnix = readU32(payload + 2);
-            if (command.startUnix == 0) return DecodeStatus::Invalid;
             consumed = 6;
             return DecodeStatus::Ok;
         }
@@ -386,10 +385,6 @@ public:
             command.kind = HistoryQueryKind::TimeRange;
             command.startUnix = readU32(payload + 2);
             command.endUnix = readU32(payload + 6);
-            if (command.startUnix == 0 || command.endUnix == 0 ||
-                command.startUnix > command.endUnix) {
-                return DecodeStatus::Invalid;
-            }
             consumed = 10;
             return DecodeStatus::Ok;
         }
