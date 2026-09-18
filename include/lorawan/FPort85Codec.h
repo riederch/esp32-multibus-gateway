@@ -58,6 +58,19 @@ struct UtcTimezoneCommand {
 
 struct LnsTimeSyncCommand {};
 
+struct DstSettingsCommand {
+    bool enabled = false;
+    uint8_t biasMinutes = 0;
+    uint8_t startMonth = 0;
+    uint8_t startWeek = 0;
+    uint8_t startWeekday = 0;
+    uint16_t startMinuteOfDay = 0;
+    uint8_t endMonth = 0;
+    uint8_t endWeek = 0;
+    uint8_t endWeekday = 0;
+    uint16_t endMinuteOfDay = 0;
+};
+
 struct ModbusMasterSettingsCommand {
     modbus::ModbusMasterSettings settings;
 };
@@ -91,6 +104,7 @@ public:
     static constexpr uint8_t kPeriodicReportEnquiryType = 0x28;
     static constexpr uint8_t kUtcTimezoneType = 0xBD;
     static constexpr uint8_t kLnsTimeSyncType = 0x4A;
+    static constexpr uint8_t kDstSettingsType = 0x72;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
@@ -112,6 +126,7 @@ public:
         if (header.channelId == kSystemChannel && header.type == kPeriodicReportEnquiryType) return true;
         if (header.channelId == kSystemChannel && header.type == kUtcTimezoneType) return true;
         if (header.channelId == kSystemChannel && header.type == kLnsTimeSyncType) return true;
+        if (header.channelId == kModbusChannel && header.type == kDstSettingsType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
@@ -198,6 +213,49 @@ public:
 
         command = LnsTimeSyncCommand{};
         consumed = 3;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeDstSettingsCommand(const uint8_t* payload,
+                                               size_t length,
+                                               DstSettingsCommand& command,
+                                               size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 11) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kDstSettingsType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        command = DstSettingsCommand{};
+        command.enabled = (payload[2] & 0x80U) != 0;
+        command.biasMinutes = payload[2] & 0x7fU;
+        command.startMonth = payload[3];
+        command.startWeek = (payload[4] >> 4U) & 0x0fU;
+        command.startWeekday = payload[4] & 0x0fU;
+        command.startMinuteOfDay = static_cast<uint16_t>(payload[5]) |
+                                   (static_cast<uint16_t>(payload[6]) << 8U);
+        command.endMonth = payload[7];
+        command.endWeek = (payload[8] >> 4U) & 0x0fU;
+        command.endWeekday = payload[8] & 0x0fU;
+        command.endMinuteOfDay = static_cast<uint16_t>(payload[9]) |
+                                 (static_cast<uint16_t>(payload[10]) << 8U);
+
+        if (command.biasMinutes > 120) return DecodeStatus::Invalid;
+        if (command.enabled) {
+            if (command.biasMinutes == 0 ||
+                command.startMonth < 1 || command.startMonth > 12 ||
+                command.startWeek < 1 || command.startWeek > 5 ||
+                command.startWeekday < 1 || command.startWeekday > 7 ||
+                command.startMinuteOfDay > 1439 ||
+                command.endMonth < 1 || command.endMonth > 12 ||
+                command.endWeek < 1 || command.endWeek > 5 ||
+                command.endWeekday < 1 || command.endWeekday > 7 ||
+                command.endMinuteOfDay > 1439) {
+                return DecodeStatus::Invalid;
+            }
+        }
+
+        consumed = 11;
         return DecodeStatus::Ok;
     }
 
