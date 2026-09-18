@@ -40,6 +40,8 @@ struct MqttConfig {
     bool retainState = true;
     bool homeAssistantDiscovery = false;
     String homeAssistantPrefix = "homeassistant";
+    bool tlsEnabled = false;
+    String caCertificate;
 
     bool valid() const {
         if (port == 0 || publishIntervalSeconds < 1 || publishIntervalSeconds > 3600) return false;
@@ -48,6 +50,8 @@ struct MqttConfig {
         if (homeAssistantPrefix.isEmpty() || homeAssistantPrefix.length() > 64 ||
             !mqtt::validTopicPrefix(homeAssistantPrefix.c_str())) return false;
         if (enabled && host.isEmpty()) return false;
+        if (caCertificate.length() > 4095) return false;
+        if (enabled && tlsEnabled && caCertificate.isEmpty()) return false;
         return true;
     }
 };
