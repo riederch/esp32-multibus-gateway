@@ -13,6 +13,8 @@ using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
 using multibus::lorawan::ModbusMasterSettingsCommand;
 using multibus::lorawan::Rs485SettingsCommand;
+using multibus::lorawan::Rs485SettingsEnquiryCommand;
+using multibus::lorawan::Rs485SettingsEnquiryKind;
 using multibus::modbus::PassThroughMode;
 using multibus::modbus::Rs485Parity;
 using multibus::modbus::Rs485StopBits;
@@ -176,6 +178,71 @@ static void testCollectionException() {
     assert(memcmp(encoded, expected, sizeof(expected)) == 0);
 }
 
+static void testRs485SettingsEnquirySerialReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x7a, 0x00};
+    Rs485SettingsEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.kind == Rs485SettingsEnquiryKind::Serial);
+
+    multibus::modbus::Rs485SerialSettings serial;
+    serial.baudRate = 9600;
+    serial.dataBits = 8;
+    serial.stopBits = Rs485StopBits::One;
+    serial.parity = Rs485Parity::None;
+    multibus::modbus::ModbusMasterSettings master;
+
+    uint8_t reply[16] = {0};
+    size_t written = 0;
+    assert(FPort85Codec::encodeRs485SettingsEnquiryReply(
+        command, serial, master, reply, sizeof(reply), written) == EncodeStatus::Ok);
+    const uint8_t expected[] = {
+        0xf8, 0x7a, 0x00, 0x00,
+        0xf9, 0x78, 0x80, 0x25, 0x00, 0x00, 0x08, 0x01, 0x00
+    };
+    assert(written == sizeof(expected));
+    assert(memcmp(reply, expected, sizeof(expected)) == 0);
+}
+
+static void testRs485SettingsEnquiryModbusReply() {
+    const uint8_t payload[] = {0xf9, 0x7a, 0x01};
+    Rs485SettingsEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.kind == Rs485SettingsEnquiryKind::Modbus);
+
+    multibus::modbus::Rs485SerialSettings serial;
+    multibus::modbus::ModbusMasterSettings master;
+    master.executionIntervalMs = 50;
+    master.maxResponseTimeMs = 500;
+    master.maxRetryTimes = 3;
+    master.passThroughMode = PassThroughMode::Disabled;
+    master.passThroughPort = 2;
+
+    uint8_t reply[16] = {0};
+    size_t written = 0;
+    assert(FPort85Codec::encodeRs485SettingsEnquiryReply(
+        command, serial, master, reply, sizeof(reply), written) == EncodeStatus::Ok);
+    const uint8_t expected[] = {
+        0xf8, 0x7a, 0x01, 0x00,
+        0xf9, 0x79, 0x32, 0x00, 0xf4, 0x01, 0x03, 0x00, 0x02
+    };
+    assert(written == sizeof(expected));
+    assert(memcmp(reply, expected, sizeof(expected)) == 0);
+}
+
+static void testRs485SettingsEnquiryRejectsUnknownKind() {
+    const uint8_t payload[] = {0xf9, 0x7a, 0x02};
+    Rs485SettingsEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRs485SettingsEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 static void testRebootReferenceVector() {
     const uint8_t payload[] = {0xff, 0x10, 0xff};
     BasicControlCommand command = BasicControlCommand::Rejoin;
@@ -215,6 +282,9 @@ int main() {
     testModbusMasterSettingsReferenceVector();
     testModbusMasterSettingsDefaultsAreRuntimeSupported();
     testModbusMasterSettingsRejectsInvalidInterval();
+    testRs485SettingsEnquirySerialReferenceVector();
+    testRs485SettingsEnquiryModbusReply();
+    testRs485SettingsEnquiryRejectsUnknownKind();
     testAddChannelReferenceVector();
     testAddressAndSignedQuantityAreLittleEndian();
     testNameReferenceVector();
