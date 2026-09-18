@@ -133,7 +133,6 @@ Validate:
 Validate/harden:
 
 - password KDF/work factor
-- login throttling
 - backup encryption
 - HTTPS/certificate strategy
 

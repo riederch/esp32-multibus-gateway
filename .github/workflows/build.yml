@@ -76,6 +76,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_execution_test.cpp -o /tmp/rule_execution_test
           /tmp/rule_execution_test
 
+      - name: Run login throttle tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/login_throttle_test.cpp -o /tmp/login_throttle_test
+          /tmp/login_throttle_test
+
       - name: Run Core command bus tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/command_bus_test.cpp -o /tmp/command_bus_test

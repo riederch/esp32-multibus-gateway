@@ -9,6 +9,7 @@
 #include "core/ConfigStore.h"
 #include "core/DeviceConfig.h"
 #include "core/EventBus.h"
+#include "core/LoginThrottle.h"
 #include "core/SecurityStore.h"
 #include "services/NetworkService.h"
 
@@ -244,22 +245,22 @@ private:
     }
 
     void handleLogin() {
-        if (static_cast<int32_t>(millis() - lockUntil_) < 0) {
+        const uint32_t now = millis();
+        if (!loginThrottle_.allowed(now)) {
+            server_.sendHeader(
+                "Retry-After",
+                String(loginThrottle_.retryAfterSeconds(now)));
             server_.send(429, "text/plain", "Too many attempts; try again later.");
             return;
         }
 
         if (!server_.hasArg("password") || !security_->verifyAdminPassword(server_.arg("password"))) {
-            ++failedLogins_;
-            if (failedLogins_ >= 5) {
-                failedLogins_ = 0;
-                lockUntil_ = millis() + 30000;
-            }
+            loginThrottle_.recordFailure(now);
             server_.send(401, "text/plain", "Invalid credentials");
             return;
         }
 
-        failedLogins_ = 0;
+        loginThrottle_.recordSuccess();
         createSession();
         setSessionCookie();
         server_.sendHeader("Location", security_->adminInitialized() ? "/" : "/change-password");
@@ -614,8 +615,7 @@ private:
     String csrfToken_;
     uint32_t sessionCreatedAt_ = 0;
     uint32_t sessionLastActivityAt_ = 0;
-    uint8_t failedLogins_ = 0;
-    uint32_t lockUntil_ = 0;
+    LoginThrottle loginThrottle_;
     uint32_t rebootAt_ = 0;
 };
 
