@@ -159,6 +159,7 @@ private:
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
+        Rs485SettingsEnquiry,
     };
 
     struct ParsedCommand {
@@ -167,6 +168,7 @@ private:
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
+        lorawan::Rs485SettingsEnquiryCommand rs485SettingsEnquiry;
     };
 
     static void factoryResetThunk(void* context) {
@@ -285,6 +287,14 @@ private:
                     !modbus::runtimeSupportsModbusMasterSettings(parsed.modbusMasterSettings.settings)) {
                     return false;
                 }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kRs485SettingsEnquiryType) {
+                parsed.kind = ParsedCommandKind::Rs485SettingsEnquiry;
+                if (lorawan::FPort85Codec::decodeRs485SettingsEnquiryCommand(
+                        payload + offset, length - offset, parsed.rs485SettingsEnquiry, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
             } else {
                 return false;
             }
@@ -307,9 +317,34 @@ private:
                 case ParsedCommandKind::ModbusMasterSettings:
                     if (!applyModbusMasterSettingsCommand(command.modbusMasterSettings)) return false;
                     break;
+                case ParsedCommandKind::Rs485SettingsEnquiry:
+                    if (!replyToRs485SettingsEnquiry(command.rs485SettingsEnquiry)) return false;
+                    break;
             }
         }
         return true;
+    }
+
+    bool replyToRs485SettingsEnquiry(const lorawan::Rs485SettingsEnquiryCommand& command) {
+        uint8_t payload[16] = {0};
+        size_t written = 0;
+        if (lorawan::FPort85Codec::encodeRs485SettingsEnquiryReply(
+                command,
+                modbus_.rs485SerialSettings(),
+                modbus_.modbusMasterSettings(),
+                payload,
+                sizeof(payload),
+                written) != lorawan::EncodeStatus::Ok ||
+            written == 0) {
+            return false;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = lorawan::kCompatibilityFPort;
+        envelope.payload = payload;
+        envelope.length = written;
+        envelope.confirmed = false;
+        return lora_.send(envelope);
     }
 
     bool applyReportIntervalCommand(const lorawan::ReportIntervalCommand& command) {
