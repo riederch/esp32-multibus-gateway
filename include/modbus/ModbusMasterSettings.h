@@ -38,11 +38,7 @@ inline bool validModbusMasterSettings(const ModbusMasterSettings& settings) {
 }
 
 inline bool runtimeSupportsModbusMasterSettings(const ModbusMasterSettings& settings) {
-    if (!validModbusMasterSettings(settings)) return false;
-    // Active pass-through is supported by the raw RS485 transaction path.
-    // Two-way pass-through additionally requires unsolicited RS485 receive
-    // monitoring and remains deliberately unsupported until that path exists.
-    return settings.passThroughMode != PassThroughMode::TwoWay;
+    return validModbusMasterSettings(settings);
 }
 
 } // namespace modbus
