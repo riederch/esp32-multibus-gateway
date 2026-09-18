@@ -138,6 +138,8 @@ public:
 
         rs485Settings_ = settings;
         serialConfig_ = config;
+        pollRetryCount_ = 0;
+        nextPollAtMs_ = millis();
         return true;
     }
 
@@ -197,6 +199,10 @@ public:
 
     bool upsertChannel(const modbus::ChannelConfig& config) {
         if (!modbus::validChannelConfig(config)) return false;
+        if (rtuMaster_.transactionPending()) {
+            rtuMaster_.cancelTransaction();
+            pollRetryCount_ = 0;
+        }
         cache_[config.slot] = PollCache{};
         for (auto& current : channels_) {
             if (current.slot == config.slot) {
@@ -209,6 +215,10 @@ public:
     }
 
     bool removeChannel(uint8_t slot) {
+        if (rtuMaster_.transactionPending()) {
+            rtuMaster_.cancelTransaction();
+            pollRetryCount_ = 0;
+        }
         for (auto it = channels_.begin(); it != channels_.end(); ++it) {
             if (it->slot == slot) {
                 channels_.erase(it);
@@ -256,41 +266,38 @@ public:
     void loop() override {
         if (mode_ != ModbusMode::Master || !active_ || channels_.empty()) return;
 
+        if (rtuMaster_.transactionPending()) {
+            modbus::DecodedScalar values[2];
+            uint8_t valueCount = 0;
+            const modbus::RtuTransactionResult result = rtuMaster_.pollRead(values, valueCount);
+            if (result == modbus::RtuTransactionResult::Pending) return;
+
+            if (result == modbus::RtuTransactionResult::Idle) {
+                pollRetryCount_ = 0;
+                nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
+                return;
+            }
+
+            if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
+            const modbus::ChannelConfig channel = channels_[pollChannelIndex_];
+            finishPollAttempt(
+                channel,
+                result == modbus::RtuTransactionResult::Success,
+                result == modbus::RtuTransactionResult::Success ? values : nullptr,
+                valueCount);
+            nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
+            return;
+        }
+
         const uint32_t now = millis();
         if (static_cast<int32_t>(now - nextPollAtMs_) < 0) return;
         if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
 
-        const modbus::ChannelConfig& channel = channels_[pollChannelIndex_];
-        modbus::DecodedScalar values[2];
-        uint8_t valueCount = 0;
-        PollCache& cached = cache_[channel.slot];
-
-        if (rtuMaster_.read(channel, values, valueCount)) {
-            cached.valid = true;
-            cached.valueCount = valueCount;
-            cached.values[0] = values[0];
-            if (valueCount > 1) cached.values[1] = values[1];
-            cached.updatedAtMs = millis();
-            cached.lastStatus = modbus::RtuDecodeStatus::Ok;
-            cached.lastExceptionCode = 0;
-            publishPollCompletion(channel, true, values, valueCount);
-            pollRetryCount_ = 0;
-            advancePollChannel();
-        } else if (pollRetryCount_ < masterSettings_.maxRetryTimes) {
-            ++pollRetryCount_;
-            cached.lastStatus = rtuMaster_.lastStatus();
-            cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
-        } else {
-            cached.valid = false;
-            cached.valueCount = 0;
-            cached.lastStatus = rtuMaster_.lastStatus();
-            cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
-            publishPollCompletion(channel, false, nullptr, 0);
-            pollRetryCount_ = 0;
-            advancePollChannel();
+        const modbus::ChannelConfig channel = channels_[pollChannelIndex_];
+        if (!rtuMaster_.startRead(channel)) {
+            finishPollAttempt(channel, false, nullptr, 0);
+            nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
         }
-
-        nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
     }
 
     bool takeCompletedPoll(PollCompletion& completion) {
@@ -397,6 +404,40 @@ private:
         modbus::RtuDecodeStatus lastStatus = modbus::RtuDecodeStatus::Truncated;
         uint8_t lastExceptionCode = 0;
     };
+
+    void finishPollAttempt(const modbus::ChannelConfig& channel,
+                           bool success,
+                           const modbus::DecodedScalar* values,
+                           uint8_t valueCount) {
+        PollCache& cached = cache_[channel.slot];
+
+        if (success) {
+            cached.valid = true;
+            cached.valueCount = valueCount;
+            cached.values[0] = values[0];
+            if (valueCount > 1) cached.values[1] = values[1];
+            cached.updatedAtMs = millis();
+            cached.lastStatus = modbus::RtuDecodeStatus::Ok;
+            cached.lastExceptionCode = 0;
+            publishPollCompletion(channel, true, values, valueCount);
+            pollRetryCount_ = 0;
+            advancePollChannel();
+            return;
+        }
+
+        cached.lastStatus = rtuMaster_.lastStatus();
+        cached.lastExceptionCode = rtuMaster_.lastExceptionCode();
+        if (pollRetryCount_ < masterSettings_.maxRetryTimes) {
+            ++pollRetryCount_;
+            return;
+        }
+
+        cached.valid = false;
+        cached.valueCount = 0;
+        publishPollCompletion(channel, false, nullptr, 0);
+        pollRetryCount_ = 0;
+        advancePollChannel();
+    }
 
     void publishPollCompletion(const modbus::ChannelConfig& channel,
                                bool success,
