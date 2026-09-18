@@ -10,6 +10,7 @@
 #include "ConfigStore.h"
 #include "DeviceConfig.h"
 #include "DeviceIdentity.h"
+#include "EventBus.h"
 #include "LoRaWanIdentity.h"
 #include "SecurityStore.h"
 #include "components/Components.h"
@@ -251,6 +252,8 @@ public:
     const SecurityStore& security() const { return security_; }
     const NetworkService& network() const { return network_; }
     const BoardService& board() const { return board_; }
+    EventBus<32>& events() { return events_; }
+    const EventBus<32>& events() const { return events_; }
 
 private:
     enum class ParsedCommandKind : uint8_t {
@@ -1960,6 +1963,7 @@ private:
     DeviceConfig config_;
     CapabilityRegistry capabilities_;
     ChannelRegistry channels_;
+    EventBus<32> events_;
     ConfigStore configStore_;
     modbus::ModbusChannelStore modbusChannelStore_;
     modbus::Rs485SettingsStore rs485SettingsStore_;
