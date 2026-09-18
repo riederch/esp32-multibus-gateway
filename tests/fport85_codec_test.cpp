@@ -24,6 +24,11 @@ using multibus::lorawan::Rs485SettingsCommand;
 using multibus::lorawan::UtcTimezoneCommand;
 using multibus::lorawan::Rs485SettingsEnquiryCommand;
 using multibus::lorawan::Rs485SettingsEnquiryKind;
+using multibus::lorawan::RuleConfigurationCommand;
+using multibus::lorawan::RuleEnquiryCommand;
+using multibus::lorawan::RuleFrameSlot;
+using multibus::lorawan::RuleStatusCommand;
+using multibus::lorawan::RuleStatusOperation;
 using multibus::modbus::PassThroughMode;
 using multibus::modbus::Rs485Parity;
 using multibus::modbus::Rs485StopBits;
@@ -508,7 +513,70 @@ static void testRetrievabilityIntervalAndReply() {
     assert(memcmp(reply, expected, sizeof(expected)) == 0);
 }
 
+static void testRuleStatusReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x76, 0x01, 0x80, 0x01};
+    RuleStatusCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRuleStatusCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.ruleMask == 0x8001);
+    assert(command.operation == RuleStatusOperation::Enable);
+}
+
+static void testRuleEnquiryReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x77, 0x02};
+    RuleEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRuleEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.ruleId == 2);
+}
+
+static void testRuleTimeConditionReferenceVector() {
+    const uint8_t payload[] = {0xf9, 0x7d, 0x81, 0x11, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x05};
+    RuleConfigurationCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRuleConfigurationCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.ruleId == 1);
+    assert(command.enabled);
+    assert(command.slot == RuleFrameSlot::Condition);
+    assert(command.subtype == 0x11);
+}
+
+static void testRuleServerMessageActionReferenceVector() {
+    const uint8_t payload[] = {
+        0xf9, 0x7d, 0x81, 0x91,
+        0xe8, 0x03, 0x00, 0x00,
+        0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f
+    };
+    RuleConfigurationCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRuleConfigurationCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.ruleId == 1);
+    assert(command.slot == RuleFrameSlot::Action1);
+    assert(command.subtype == 0x91);
+}
+
+static void testRuleD2DIsReserved() {
+    const uint8_t payload[] = {0xf9, 0x7d, 0x81, 0x92, 0, 0, 0, 0, 0x12, 0xfe};
+    RuleConfigurationCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRuleConfigurationCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Unsupported);
+    assert(consumed == 0);
+}
+
 int main() {
+    testRuleStatusReferenceVector();
+    testRuleEnquiryReferenceVector();
+    testRuleTimeConditionReferenceVector();
+    testRuleServerMessageActionReferenceVector();
+    testRuleD2DIsReserved();
     testHistoryPointQuery();
     testHistoryRangeQuery();
     testHistoryStopQuery();

@@ -108,6 +108,37 @@ struct Rs485SettingsEnquiryCommand {
     Rs485SettingsEnquiryKind kind = Rs485SettingsEnquiryKind::Serial;
 };
 
+enum class RuleStatusOperation : uint8_t {
+    Enable = 0x01,
+    Disable = 0x02,
+    Delete = 0x03,
+};
+
+struct RuleStatusCommand {
+    uint16_t ruleMask = 0;
+    RuleStatusOperation operation = RuleStatusOperation::Enable;
+};
+
+struct RuleEnquiryCommand {
+    uint8_t ruleId = 0;
+};
+
+enum class RuleFrameSlot : uint8_t {
+    Condition = 0,
+    Action1 = 1,
+    Action2 = 2,
+    Action3 = 3,
+};
+
+struct RuleConfigurationCommand {
+    uint8_t ruleId = 0;
+    bool enabled = false;
+    RuleFrameSlot slot = RuleFrameSlot::Condition;
+    uint8_t subtype = 0;
+    const uint8_t* frame = nullptr;
+    size_t frameLength = 0;
+};
+
 struct PeriodicValue {
     uint8_t slot = 0;
     modbus::UplinkDataType dataType = modbus::UplinkDataType::Coil;
@@ -141,6 +172,9 @@ public:
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
+    static constexpr uint8_t kRuleStatusType = 0x76;
+    static constexpr uint8_t kRuleEnquiryType = 0x77;
+    static constexpr uint8_t kRuleConfigurationType = 0x7D;
     static constexpr uint8_t kModbusChannelConfigType = 0xEF;
     static constexpr uint8_t kModbusChannelDataType = 0x73;
     static constexpr uint8_t kCollectionExceptionType = 0x15;
@@ -171,6 +205,9 @@ public:
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRuleStatusType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRuleEnquiryType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRuleConfigurationType) return true;
         if (header.channelId == kSystemChannel && header.type == kModbusChannelConfigType) return true;
         return false;
     }
@@ -416,6 +453,154 @@ public:
         output[2] = status;
         written = 3;
         return EncodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRuleStatusCommand(const uint8_t* payload,
+                                                size_t length,
+                                                RuleStatusCommand& command,
+                                                size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 5) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRuleStatusType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        const uint16_t mask = static_cast<uint16_t>(payload[2]) |
+                              (static_cast<uint16_t>(payload[3]) << 8U);
+        if (mask == 0) return DecodeStatus::Invalid;
+        if (payload[4] < static_cast<uint8_t>(RuleStatusOperation::Enable) ||
+            payload[4] > static_cast<uint8_t>(RuleStatusOperation::Delete)) {
+            return DecodeStatus::Invalid;
+        }
+
+        command = RuleStatusCommand{};
+        command.ruleMask = mask;
+        command.operation = static_cast<RuleStatusOperation>(payload[4]);
+        consumed = 5;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRuleEnquiryCommand(const uint8_t* payload,
+                                                 size_t length,
+                                                 RuleEnquiryCommand& command,
+                                                 size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRuleEnquiryType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (payload[2] < 1 || payload[2] > 16) return DecodeStatus::Invalid;
+
+        command = RuleEnquiryCommand{};
+        command.ruleId = payload[2];
+        consumed = 3;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRuleConfigurationCommand(const uint8_t* payload,
+                                                       size_t length,
+                                                       RuleConfigurationCommand& command,
+                                                       size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 4) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRuleConfigurationType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        const uint8_t ruleField = payload[2];
+        const uint8_t ruleId = ruleField & 0x7fU;
+        if (ruleId < 1 || ruleId > 16) return DecodeStatus::Invalid;
+
+        const uint8_t subtype = payload[3];
+        RuleFrameSlot slot = RuleFrameSlot::Condition;
+        size_t contentLength = 0;
+
+        switch (subtype) {
+            case 0x11:
+                contentLength = 9;
+                if (length < 2U + contentLength) return DecodeStatus::Truncated;
+                if (payload[4] > 0x01 || payload[9] > 23 || payload[10] > 59) return DecodeStatus::Invalid;
+                break;
+            case 0x12: {
+                contentLength = 20;
+                if (length < 2U + contentLength) return DecodeStatus::Truncated;
+                if (payload[4] < 1 || payload[4] > 32) return DecodeStatus::Invalid;
+                const uint8_t mode = payload[5] & 0x0fU;
+                const uint8_t continueMode = (payload[5] >> 4U) & 0x0fU;
+                if (mode > 0x07 || continueMode > 0x01) return DecodeStatus::Invalid;
+                break;
+            }
+            case 0x13:
+            case 0x14: {
+                if (length < 5) return DecodeStatus::Truncated;
+                const uint8_t messageLength = payload[4];
+                if (messageLength < 2 || messageLength > 48) return DecodeStatus::Invalid;
+                contentLength = static_cast<size_t>(3U + messageLength);
+                if (length < 2U + contentLength) return DecodeStatus::Truncated;
+                break;
+            }
+            case 0x15:
+                return DecodeStatus::Unsupported; // proprietary Milesight D2D
+            case 0x16:
+                contentLength = 2;
+                break;
+
+            default: {
+                const uint8_t actionGroup = subtype & 0xf0U;
+                const uint8_t actionKind = subtype & 0x0fU;
+                if (actionGroup == 0x90U) slot = RuleFrameSlot::Action1;
+                else if (actionGroup == 0xa0U) slot = RuleFrameSlot::Action2;
+                else if (actionGroup == 0xb0U) slot = RuleFrameSlot::Action3;
+                else return DecodeStatus::Unsupported;
+
+                switch (actionKind) {
+                    case 0x00:
+                        contentLength = 2;
+                        break;
+                    case 0x01: {
+                        if (length < 9) return DecodeStatus::Truncated;
+                        const uint8_t messageLength = payload[8];
+                        if (messageLength < 1 || messageLength > 48) return DecodeStatus::Invalid;
+                        contentLength = static_cast<size_t>(7U + messageLength);
+                        break;
+                    }
+                    case 0x02:
+                        return DecodeStatus::Unsupported; // proprietary Milesight D2D
+                    case 0x03: {
+                        if (length < 9) return DecodeStatus::Truncated;
+                        const uint8_t messageLength = payload[8];
+                        if (messageLength < 2 || messageLength > 48) return DecodeStatus::Invalid;
+                        contentLength = static_cast<size_t>(7U + messageLength);
+                        break;
+                    }
+                    case 0x04:
+                    case 0x06:
+                        contentLength = 6;
+                        break;
+                    case 0x05:
+                        contentLength = 7;
+                        break;
+                    default:
+                        return DecodeStatus::Unsupported;
+                }
+                if (length < 2U + contentLength) return DecodeStatus::Truncated;
+                break;
+            }
+        }
+
+        if (contentLength == 0 || contentLength > 55 || length < 2U + contentLength) {
+            return DecodeStatus::Invalid;
+        }
+
+        command = RuleConfigurationCommand{};
+        command.ruleId = ruleId;
+        command.enabled = (ruleField & 0x80U) != 0;
+        command.slot = slot;
+        command.subtype = subtype;
+        command.frame = payload;
+        command.frameLength = 2U + contentLength;
+        consumed = command.frameLength;
+        return DecodeStatus::Ok;
     }
 
     static DecodeStatus decodeRs485SettingsCommand(const uint8_t* payload,
