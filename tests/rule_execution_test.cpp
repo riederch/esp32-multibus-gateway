@@ -73,6 +73,17 @@ static void testActions() {
     assert(uploadPlan.action == ExecutableAction::UploadData);
     assert(uploadPlan.delayMs == 1000);
 
+    const uint8_t message[] = {
+        0xf9, 0x7d, 0x81, 0x91,
+        0xfa, 0x00, 0x00, 0x00,
+        0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f
+    };
+    const ActionPlan messagePlan = decodeExecutableAction(frame(message, sizeof(message)));
+    assert(messagePlan.action == ExecutableAction::ServerMessage);
+    assert(messagePlan.delayMs == 250);
+    assert(messagePlan.payloadLength == 5);
+    assert(memcmp(messagePlan.payload, "hello", 5) == 0);
+
     const uint8_t raw[] = {
         0xf9, 0x7d, 0x81, 0x93,
         0xf4, 0x01, 0x00, 0x00,
