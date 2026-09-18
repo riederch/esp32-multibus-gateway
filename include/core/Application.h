@@ -333,16 +333,18 @@ private:
         if (static_cast<int32_t>(now - nextHistoryRetransmissionAtMs_) < 0) return false;
 
         if (!retransmissionCursorInitialized_) {
+            retransmissionSnapshot_ = historyRing_;
             retransmissionCursor_ = 0;
-            while (retransmissionCursor_ < historyRing_.size()) {
-                const lorawan::HistoricalRecord* record = historyRing_.oldest(retransmissionCursor_);
+            while (retransmissionCursor_ < retransmissionSnapshot_.size()) {
+                const lorawan::HistoricalRecord* record =
+                    retransmissionSnapshot_.oldest(retransmissionCursor_);
                 if (record != nullptr && record->timestamp() >= historyRetransmissionState_.lostAtUnix) break;
                 ++retransmissionCursor_;
             }
             retransmissionCursorInitialized_ = true;
         }
 
-        if (retransmissionCursor_ >= historyRing_.size()) {
+        if (retransmissionCursor_ >= retransmissionSnapshot_.size()) {
             history::RetransmissionState cleared;
             if (!historyRetransmissionStore_.save(cleared)) {
                 ++historyRetransmissionStateFailures_;
@@ -358,9 +360,9 @@ private:
         uint8_t payload[lorawan::kCompatibilityReportPayloadLimit] = {0};
         size_t written = 0;
         size_t recordsAdded = 0;
-        while (retransmissionCursor_ + recordsAdded < historyRing_.size()) {
+        while (retransmissionCursor_ + recordsAdded < retransmissionSnapshot_.size()) {
             const lorawan::HistoricalRecord* record =
-                historyRing_.oldest(retransmissionCursor_ + recordsAdded);
+                retransmissionSnapshot_.oldest(retransmissionCursor_ + recordsAdded);
             if (record == nullptr) break;
             if (written + lorawan::kHistoricalModbusRecordLength >
                 lorawan::kCompatibilityReportPayloadLimit) {
@@ -396,7 +398,7 @@ private:
         nextHistoryRetransmissionAtMs_ =
             now + static_cast<uint32_t>(historySettings_.retransmissionIntervalSeconds) * 1000UL;
 
-        if (retransmissionCursor_ >= historyRing_.size()) {
+        if (retransmissionCursor_ >= retransmissionSnapshot_.size()) {
             history::RetransmissionState cleared;
             if (historyRetransmissionStore_.save(cleared)) {
                 historyRetransmissionState_ = cleared;
@@ -986,6 +988,7 @@ private:
     history::Settings historySettings_;
     history::PersistentHistoryStore historyStore_;
     history::PersistentHistoryStore::Ring historyRing_;
+    history::PersistentHistoryStore::Ring retransmissionSnapshot_;
     history::RetransmissionStateStore historyRetransmissionStore_;
     history::RetransmissionState historyRetransmissionState_;
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
