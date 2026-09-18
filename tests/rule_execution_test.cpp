@@ -10,6 +10,8 @@ using multibus::rules::StoredFrame;
 using multibus::rules::decodeExecutableAction;
 using multibus::rules::isDeviceRestartCondition;
 using multibus::rules::matchesTimeCondition;
+using multibus::rules::matchesServerMessageCondition;
+using multibus::rules::validServerMessage;
 using multibus::time::DstSettings;
 using multibus::time::LocalDateTime;
 using multibus::time::Settings;
@@ -129,7 +131,24 @@ static void testViennaStyleDstConversion() {
     assert(winter.hour == 13);
 }
 
+static void testServerMessageCondition() {
+    const uint8_t conditionData[] = {
+        0xf9, 0x7d, 0x81, 0x14,
+        0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f
+    };
+    const StoredFrame condition = frame(conditionData, sizeof(conditionData));
+    const uint8_t hello[] = {'h','e','l','l','o'};
+    const uint8_t other[] = {'h','e','l','l','!'};
+    assert(validServerMessage(hello, sizeof(hello)));
+    assert(matchesServerMessageCondition(condition, hello, sizeof(hello)));
+    assert(!matchesServerMessageCondition(condition, other, sizeof(other)));
+
+    const uint8_t binary[] = {0xff, 0x10, 0xff};
+    assert(!validServerMessage(binary, sizeof(binary)));
+}
+
 int main() {
+    testServerMessageCondition();
     testWeeklyTimeCondition();
     testMonthlyTimeCondition();
     testRestartCondition();
