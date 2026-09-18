@@ -699,7 +699,8 @@ private:
             scheduled.dueAtMs = millis() + plan.delayMs;
             scheduled.ruleId = ruleId;
             scheduled.actionSlot = actionIndex;
-            if (plan.action == rules::ExecutableAction::RawRs485) {
+            if (plan.action == rules::ExecutableAction::RawRs485 ||
+                plan.action == rules::ExecutableAction::ServerMessage) {
                 if (plan.payload == nullptr || plan.payloadLength < 2 ||
                     plan.payloadLength > sizeof(scheduled.payload)) {
                     scheduled = ScheduledRuleAction{};
@@ -728,6 +729,19 @@ private:
             }
 
             switch (scheduled.action) {
+                case rules::ExecutableAction::ServerMessage: {
+                    TransportEnvelope envelope;
+                    envelope.endpoint = lorawan::kCompatibilityFPort;
+                    envelope.payload = scheduled.payload;
+                    envelope.length = scheduled.payloadLength;
+                    envelope.confirmed = false;
+                    if (lora_.send(envelope)) {
+                        ++ruleActionsExecuted_;
+                    } else {
+                        ++ruleActionSendFailures_;
+                    }
+                    break;
+                }
                 case rules::ExecutableAction::UploadData:
                     reportScheduler_.requestImmediateReport();
                     ++ruleActionsExecuted_;
@@ -1651,6 +1665,7 @@ private:
     uint32_t ruleActionsExecuted_ = 0;
     uint32_t ruleUnsupportedActions_ = 0;
     uint32_t ruleActionQueueFailures_ = 0;
+    uint32_t ruleActionSendFailures_ = 0;
     uint32_t ruleRawRs485Completions_ = 0;
     uint32_t ruleRawRs485Failures_ = 0;
     bool historyQueryActive_ = false;
