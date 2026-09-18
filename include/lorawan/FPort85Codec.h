@@ -54,6 +54,15 @@ struct ModbusMasterSettingsCommand {
     modbus::ModbusMasterSettings settings;
 };
 
+enum class Rs485SettingsEnquiryKind : uint8_t {
+    Serial = 0x00,
+    Modbus = 0x01,
+};
+
+struct Rs485SettingsEnquiryCommand {
+    Rs485SettingsEnquiryKind kind = Rs485SettingsEnquiryKind::Serial;
+};
+
 struct PeriodicValue {
     uint8_t slot = 0;
     modbus::UplinkDataType dataType = modbus::UplinkDataType::Coil;
@@ -73,6 +82,7 @@ public:
     static constexpr uint8_t kRebootType = 0x10;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
+    static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
     static constexpr uint8_t kModbusChannelConfigType = 0xEF;
     static constexpr uint8_t kModbusChannelDataType = 0x73;
     static constexpr uint8_t kCollectionExceptionType = 0x15;
@@ -90,6 +100,7 @@ public:
         if (header.channelId == kSystemChannel && header.type == kRebootType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
         if (header.channelId == kSystemChannel && header.type == kModbusChannelConfigType) return true;
         return false;
     }
@@ -170,6 +181,77 @@ public:
         command.settings = settings;
         consumed = 9;
         return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRs485SettingsEnquiryCommand(
+        const uint8_t* payload,
+        size_t length,
+        Rs485SettingsEnquiryCommand& command,
+        size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRs485SettingsEnquiryType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (payload[2] > static_cast<uint8_t>(Rs485SettingsEnquiryKind::Modbus)) {
+            return DecodeStatus::Invalid;
+        }
+
+        command = Rs485SettingsEnquiryCommand{};
+        command.kind = static_cast<Rs485SettingsEnquiryKind>(payload[2]);
+        consumed = 3;
+        return DecodeStatus::Ok;
+    }
+
+    static EncodeStatus encodeRs485SettingsEnquiryReply(
+        const Rs485SettingsEnquiryCommand& command,
+        const modbus::Rs485SerialSettings& serialSettings,
+        const modbus::ModbusMasterSettings& masterSettings,
+        uint8_t* output,
+        size_t capacity,
+        size_t& written) {
+        written = 0;
+        if (output == nullptr) return EncodeStatus::Invalid;
+
+        const bool serial = command.kind == Rs485SettingsEnquiryKind::Serial;
+        const bool modbus = command.kind == Rs485SettingsEnquiryKind::Modbus;
+        if (!serial && !modbus) return EncodeStatus::Invalid;
+
+        const size_t settingLength = serial ? 9U : 9U;
+        const size_t totalLength = 4U + settingLength;
+        if (capacity < totalLength) return EncodeStatus::BufferTooSmall;
+
+        output[0] = 0xF8;
+        output[1] = kRs485SettingsEnquiryType;
+        output[2] = static_cast<uint8_t>(command.kind);
+        output[3] = 0x00;
+
+        if (serial) {
+            if (!modbus::validRs485SerialSettings(serialSettings)) return EncodeStatus::Invalid;
+            output[4] = kModbusChannel;
+            output[5] = kRs485ConfigType;
+            output[6] = static_cast<uint8_t>(serialSettings.baudRate & 0xffU);
+            output[7] = static_cast<uint8_t>((serialSettings.baudRate >> 8U) & 0xffU);
+            output[8] = static_cast<uint8_t>((serialSettings.baudRate >> 16U) & 0xffU);
+            output[9] = static_cast<uint8_t>((serialSettings.baudRate >> 24U) & 0xffU);
+            output[10] = serialSettings.dataBits;
+            output[11] = static_cast<uint8_t>(serialSettings.stopBits);
+            output[12] = static_cast<uint8_t>(serialSettings.parity);
+        } else {
+            if (!modbus::validModbusMasterSettings(masterSettings)) return EncodeStatus::Invalid;
+            output[4] = kModbusChannel;
+            output[5] = kModbusGlobalConfigType;
+            output[6] = static_cast<uint8_t>(masterSettings.executionIntervalMs & 0xffU);
+            output[7] = static_cast<uint8_t>((masterSettings.executionIntervalMs >> 8U) & 0xffU);
+            output[8] = static_cast<uint8_t>(masterSettings.maxResponseTimeMs & 0xffU);
+            output[9] = static_cast<uint8_t>((masterSettings.maxResponseTimeMs >> 8U) & 0xffU);
+            output[10] = masterSettings.maxRetryTimes;
+            output[11] = static_cast<uint8_t>(masterSettings.passThroughMode);
+            output[12] = masterSettings.passThroughPort;
+        }
+
+        written = totalLength;
+        return EncodeStatus::Ok;
     }
 
     static DecodeStatus decodeModbusChannelCommand(const uint8_t* payload,
