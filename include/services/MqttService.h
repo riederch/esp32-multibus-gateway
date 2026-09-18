@@ -205,6 +205,36 @@ private:
         return "sensor";
     }
 
+    struct DiscoveryEntry {
+        uint16_t channelId = 0;
+        char component[16] = {0};
+    };
+
+    static bool sameDiscoveryEntry(const DiscoveryEntry& a,
+                                   const DiscoveryEntry& b) {
+        return a.channelId == b.channelId &&
+               strcmp(a.component, b.component) == 0;
+    }
+
+    bool clearHomeAssistantDiscovery(const DiscoveryEntry& entry) {
+        char topic[224] = {0};
+        if (!mqtt::makeHomeAssistantDiscoveryTopic(
+                config_->homeAssistantPrefix.c_str(),
+                entry.component,
+                deviceId_.c_str(),
+                entry.channelId,
+                topic,
+                sizeof(topic))) {
+            ++discoveryFailures_;
+            return false;
+        }
+        if (!client_.publish(topic, "", true)) {
+            ++discoveryFailures_;
+            return false;
+        }
+        return true;
+    }
+
     void refreshHomeAssistantDiscovery(bool force = false) {
         if (config_ == nullptr || !config_->homeAssistantDiscovery ||
             channels_ == nullptr || describeHandler_ == nullptr ||
@@ -215,11 +245,51 @@ private:
         const uint32_t signature = discoverySignature();
         if (!force && signature == discoverySignature_) return;
 
+        DiscoveryEntry desired[ChannelRegistry::kRecommendedMaxChannels];
+        size_t desiredCount = 0;
+
         for (const auto& binding : channels_->all()) {
             if (!binding.enabled) continue;
             DataPointDescriptor descriptor;
             if (!describeHandler_(context_, binding, descriptor)) continue;
+            if (desiredCount >= ChannelRegistry::kRecommendedMaxChannels) {
+                ++discoveryFailures_;
+                break;
+            }
+
+            DiscoveryEntry& entry = desired[desiredCount++];
+            entry.channelId = binding.channelId;
+            snprintf(
+                entry.component,
+                sizeof(entry.component),
+                "%s",
+                discoveryComponent(binding, descriptor));
+        }
+
+        for (size_t i = 0; i < discoveredCount_; ++i) {
+            bool stillPresent = false;
+            for (size_t j = 0; j < desiredCount; ++j) {
+                if (sameDiscoveryEntry(discovered_[i], desired[j])) {
+                    stillPresent = true;
+                    break;
+                }
+            }
+            if (!stillPresent) clearHomeAssistantDiscovery(discovered_[i]);
+        }
+
+        size_t desiredIndex = 0;
+        for (const auto& binding : channels_->all()) {
+            if (!binding.enabled) continue;
+            DataPointDescriptor descriptor;
+            if (!describeHandler_(context_, binding, descriptor)) continue;
+            if (desiredIndex >= desiredCount) break;
             publishHomeAssistantDiscovery(binding, descriptor);
+            ++desiredIndex;
+        }
+
+        discoveredCount_ = desiredCount;
+        for (size_t i = 0; i < desiredCount; ++i) {
+            discovered_[i] = desired[i];
         }
         discoverySignature_ = signature;
     }
@@ -423,6 +493,8 @@ private:
     uint32_t discoveryPublishes_ = 0;
     uint32_t discoveryFailures_ = 0;
     uint32_t discoverySignature_ = 0;
+    DiscoveryEntry discovered_[ChannelRegistry::kRecommendedMaxChannels];
+    size_t discoveredCount_ = 0;
     bool connected_ = false;
 };
 
