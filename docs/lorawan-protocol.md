@@ -83,6 +83,9 @@ The compatibility target is strict for the complete applicable non-D2D UC100 V2 
 
 The reference protocol influences the compatibility codec only; the internal MultiBus architecture remains source- and transport-neutral.
 
+The detailed implementation matrix is maintained in
+`docs/uc100-compatibility.md`.
+
 ## Command coverage
 
 The compatibility implementation must cover the applicable command set, including:
