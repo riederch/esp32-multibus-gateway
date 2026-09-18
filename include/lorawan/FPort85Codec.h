@@ -45,6 +45,11 @@ struct Rs485SettingsCommand {
     modbus::Rs485SerialSettings settings;
 };
 
+enum class BasicControlCommand : uint8_t {
+    Rejoin,
+    Reboot,
+};
+
 struct ModbusMasterSettingsCommand {
     modbus::ModbusMasterSettings settings;
 };
@@ -64,6 +69,8 @@ public:
     static constexpr uint8_t kModbusChannel = 0xF9;
 
     static constexpr uint8_t kReportIntervalType = 0x03;
+    static constexpr uint8_t kRejoinType = 0x04;
+    static constexpr uint8_t kRebootType = 0x10;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kModbusChannelConfigType = 0xEF;
@@ -79,6 +86,8 @@ public:
 
     static bool isVerifiedCommandPrefix(const CommandHeader& header) {
         if (header.channelId == kSystemChannel && header.type == kReportIntervalType) return true;
+        if (header.channelId == kSystemChannel && header.type == kRejoinType) return true;
+        if (header.channelId == kSystemChannel && header.type == kRebootType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kSystemChannel && header.type == kModbusChannelConfigType) return true;
@@ -88,6 +97,27 @@ public:
     static bool isVerifiedUplinkPrefix(const CommandHeader& header) {
         return (header.channelId == kModbusChannel && header.type == kModbusChannelDataType) ||
                (header.channelId == kSystemChannel && header.type == kCollectionExceptionType);
+    }
+
+    static DecodeStatus decodeBasicControlCommand(const uint8_t* payload,
+                                                  size_t length,
+                                                  BasicControlCommand& command,
+                                                  size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kSystemChannel) return DecodeStatus::Unsupported;
+        if (payload[2] != 0xff) return DecodeStatus::Invalid;
+
+        if (payload[1] == kRejoinType) {
+            command = BasicControlCommand::Rejoin;
+        } else if (payload[1] == kRebootType) {
+            command = BasicControlCommand::Reboot;
+        } else {
+            return DecodeStatus::Unsupported;
+        }
+
+        consumed = 3;
+        return DecodeStatus::Ok;
     }
 
     static DecodeStatus decodeRs485SettingsCommand(const uint8_t* payload,
