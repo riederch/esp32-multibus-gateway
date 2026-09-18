@@ -51,6 +51,8 @@ public:
             config.mqtt.retainState = prefs_.getBool("mq_retain", true);
             config.mqtt.homeAssistantDiscovery = prefs_.getBool("mq_ha", false);
             config.mqtt.homeAssistantPrefix = prefs_.getString("mq_ha_pref", "homeassistant");
+            config.mqtt.tlsEnabled = prefs_.getBool("mq_tls", false);
+            config.mqtt.caCertificate = prefs_.getString("mq_ca", "");
         }
 
         needsSave_ = storedSchema != DEVICE_CONFIG_SCHEMA_VERSION;
@@ -88,6 +90,8 @@ public:
         prefs_.putBool("mq_retain", config.mqtt.retainState);
         prefs_.putBool("mq_ha", config.mqtt.homeAssistantDiscovery);
         prefs_.putString("mq_ha_pref", config.mqtt.homeAssistantPrefix);
+        prefs_.putBool("mq_tls", config.mqtt.tlsEnabled);
+        prefs_.putString("mq_ca", config.mqtt.caCertificate);
 
         needsSave_ = false;
         return prefs_.getUInt("schema", 0) == DEVICE_CONFIG_SCHEMA_VERSION;
