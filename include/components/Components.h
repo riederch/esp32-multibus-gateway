@@ -398,6 +398,10 @@ public:
             return;
         }
 
+        if (masterSettings_.passThroughMode == modbus::PassThroughMode::TwoWay) {
+            return;
+        }
+
         if (pendingWrite_.queued) {
             activeWrite_ = pendingWrite_;
             pendingWrite_.queued = false;
@@ -428,7 +432,7 @@ public:
     }
 
     bool queueRawRequest(const uint8_t* payload, size_t length) {
-        if (masterSettings_.passThroughMode != modbus::PassThroughMode::Active) return false;
+        if (masterSettings_.passThroughMode == modbus::PassThroughMode::Disabled) return false;
         return queueRawRequestInternal(payload, length, RawRequestOrigin::PassThrough);
     }
 
@@ -476,8 +480,10 @@ public:
 
                 descriptor.id = pointIdForSlot(channel.slot, registerIndex);
                 descriptor.unit = "";
-                descriptor.readable = mode_ == ModbusMode::Master;
+                descriptor.readable = mode_ == ModbusMode::Master &&
+                                      masterSettings_.passThroughMode != modbus::PassThroughMode::TwoWay;
                 descriptor.writable = mode_ == ModbusMode::Master &&
+                                      masterSettings_.passThroughMode != modbus::PassThroughMode::TwoWay &&
                                       modbus::ModbusRtuCodec::writableType(channel.dataType);
 
                 if (modbus::isBooleanType(channel.dataType)) {
@@ -497,7 +503,8 @@ public:
 
     bool readPoint(const String& pointId, DataValue& value) override {
         value = DataValue{};
-        if (mode_ != ModbusMode::Master || !active_) return false;
+        if (mode_ != ModbusMode::Master || !active_ ||
+            masterSettings_.passThroughMode == modbus::PassThroughMode::TwoWay) return false;
 
         uint8_t slot = 0;
         uint8_t registerIndex = 0;
@@ -535,6 +542,7 @@ public:
 
     bool writePoint(const String& pointId, const DataValue& value) override {
         if (mode_ != ModbusMode::Master || !active_ || !value.valid ||
+            masterSettings_.passThroughMode == modbus::PassThroughMode::TwoWay ||
             pendingWrite_.queued || writeInFlight_) {
             return false;
         }

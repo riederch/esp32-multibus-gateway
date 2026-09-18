@@ -80,12 +80,12 @@ static void testModbusMasterSettingsReferenceVector() {
     assert(multibus::modbus::runtimeSupportsModbusMasterSettings(command.settings));
 }
 
-static void testTwoWayPassThroughRemainsUnsupported() {
+static void testTwoWayPassThroughIsRuntimeSupported() {
     multibus::modbus::ModbusMasterSettings settings;
     settings.passThroughMode = PassThroughMode::TwoWay;
     settings.passThroughPort = 5;
     assert(multibus::modbus::validModbusMasterSettings(settings));
-    assert(!multibus::modbus::runtimeSupportsModbusMasterSettings(settings));
+    assert(multibus::modbus::runtimeSupportsModbusMasterSettings(settings));
 }
 
 static void testModbusMasterSettingsDefaultsAreRuntimeSupported() {
@@ -603,7 +603,7 @@ int main() {
     testRs485SettingsRejectsUnknownBaud();
     testModbusMasterSettingsReferenceVector();
     testModbusMasterSettingsDefaultsAreRuntimeSupported();
-    testTwoWayPassThroughRemainsUnsupported();
+    testTwoWayPassThroughIsRuntimeSupported();
     testModbusMasterSettingsRejectsInvalidInterval();
     testRs485SettingsEnquirySerialReferenceVector();
     testRs485SettingsEnquiryModbusReply();
