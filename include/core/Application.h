@@ -201,18 +201,21 @@ public:
         processPassiveRs485Frame();
         const bool passThroughHandled = processModbusPassThroughResponse();
         const bool basicInfoHandled = !passThroughHandled && processCompatibilityBasicInfo();
+        const bool twoWayHandled =
+            !passThroughHandled && !basicInfoHandled && processTwoWayPassThroughUplink();
         captureModbusCompatibilitySample();
         processRuleExecution();
         processHistoryStorage();
         const bool ruleReplyActive =
-            !passThroughHandled && !basicInfoHandled && processRuleReply();
+            !passThroughHandled && !basicInfoHandled && !twoWayHandled && processRuleReply();
         const bool queryActive =
-            !passThroughHandled && !basicInfoHandled && !ruleReplyActive && processHistoryQuery();
+            !passThroughHandled && !basicInfoHandled && !twoWayHandled &&
+            !ruleReplyActive && processHistoryQuery();
         const bool retransmissionActive =
-            !passThroughHandled && !basicInfoHandled && !ruleReplyActive &&
-            !queryActive && processHistoryRetransmission();
-        if (!passThroughHandled && !basicInfoHandled && !ruleReplyActive &&
-            !queryActive && !retransmissionActive) {
+            !passThroughHandled && !basicInfoHandled && !twoWayHandled &&
+            !ruleReplyActive && !queryActive && processHistoryRetransmission();
+        if (!passThroughHandled && !basicInfoHandled && !twoWayHandled &&
+            !ruleReplyActive && !queryActive && !retransmissionActive) {
             processModbusCompatibilityReport();
         }
         gnss_.loop();
@@ -316,6 +319,45 @@ private:
             scheduleRuleActions(id, *record);
             ++ruleRs485Triggers_;
         }
+
+        if (modbus_.modbusMasterSettings().passThroughMode ==
+            modbus::PassThroughMode::TwoWay) {
+            if (twoWayFramePending_) {
+                ++twoWayFramesDropped_;
+                return;
+            }
+            twoWayFramePending_ = true;
+            twoWayFrameLength_ = frame.length;
+            memcpy(twoWayFrame_, frame.payload, frame.length);
+        }
+    }
+
+    bool processTwoWayPassThroughUplink() {
+        if (!twoWayFramePending_) return false;
+        if (!lora_.connected()) return true;
+
+        const auto& settings = modbus_.modbusMasterSettings();
+        if (settings.passThroughMode != modbus::PassThroughMode::TwoWay) {
+            twoWayFramePending_ = false;
+            twoWayFrameLength_ = 0;
+            return false;
+        }
+
+        TransportEnvelope envelope;
+        envelope.endpoint = settings.passThroughPort;
+        envelope.payload = twoWayFrame_;
+        envelope.length = twoWayFrameLength_;
+        envelope.confirmed = false;
+
+        if (!lora_.send(envelope)) {
+            ++twoWayUplinkFailures_;
+            return true;
+        }
+
+        twoWayFramePending_ = false;
+        twoWayFrameLength_ = 0;
+        ++twoWayUplinksSent_;
+        return true;
     }
 
     void evaluateChannelRules(const ModbusComponent::PollCompletion& completion) {
@@ -1202,7 +1244,7 @@ private:
         if (fport != lorawan::kCompatibilityFPort) {
             const auto& settings = modbus_.modbusMasterSettings();
             if (config_.components.modbus == ModbusMode::Master &&
-                settings.passThroughMode == modbus::PassThroughMode::Active &&
+                settings.passThroughMode != modbus::PassThroughMode::Disabled &&
                 fport == settings.passThroughPort) {
                 return modbus_.queueRawRequest(payload, length);
             }
@@ -1516,10 +1558,22 @@ private:
 
         const modbus::ModbusMasterSettings previous = modbus_.modbusMasterSettings();
         if (!modbus_.applyModbusMasterSettings(command.settings)) return false;
-        if (modbusMasterSettingsStore_.save(command.settings)) return true;
+        if (!modbusMasterSettingsStore_.save(command.settings)) {
+            modbus_.applyModbusMasterSettings(previous);
+            return false;
+        }
 
-        modbus_.applyModbusMasterSettings(previous);
-        return false;
+        if (command.settings.passThroughMode == modbus::PassThroughMode::TwoWay) {
+            reportScheduler_.abortReport();
+            for (uint8_t slot = 0; slot < modbus::kCompatibilitySlotCount; ++slot) {
+                reportScheduler_.clearSlot(slot);
+                historySamples_[slot] = HistorySample{};
+            }
+        } else {
+            twoWayFramePending_ = false;
+            twoWayFrameLength_ = 0;
+        }
+        return true;
     }
 
     bool applyModbusChannelCommand(const lorawan::ModbusChannelCommand& command) {
@@ -1812,6 +1866,9 @@ private:
     uint32_t compatibilityBasicInfoSendFailures_ = 0;
     uint32_t passThroughResponsesSent_ = 0;
     uint32_t passThroughFailures_ = 0;
+    uint32_t twoWayUplinksSent_ = 0;
+    uint32_t twoWayUplinkFailures_ = 0;
+    uint32_t twoWayFramesDropped_ = 0;
     uint32_t nextHistorySnapshotAtMs_ = 0;
     uint32_t historySnapshotsStored_ = 0;
     uint32_t historySnapshotsSkippedNoTime_ = 0;
@@ -1843,6 +1900,9 @@ private:
     uint32_t ruleRs485Triggers_ = 0;
     uint32_t ruleChannelReleases_ = 0;
     uint32_t ruleAlarmEncodeFailures_ = 0;
+    uint8_t twoWayFrame_[242] = {0};
+    size_t twoWayFrameLength_ = 0;
+    bool twoWayFramePending_ = false;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
