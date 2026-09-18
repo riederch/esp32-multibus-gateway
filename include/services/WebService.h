@@ -144,6 +144,7 @@ private:
             html += "<h1>MultiBus Gateway</h1><form method='post' action='/login'>"
                     "<label>Administrator password <input type='password' name='password' required autofocus></label>"
                     "<button type='submit'>Login</button></form></body></html>";
+            server_.sendHeader("Cache-Control", "no-store");
             server_.send(200, "text/html", html);
             return;
         }
@@ -238,6 +239,7 @@ private:
                 "s.textContent=await r.text();}"
                 "loadEvents();setInterval(loadEvents,5000);"
                 "</script></body></html>";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "text/html", html);
     }
 
@@ -280,6 +282,7 @@ private:
                 "<label>New password <input type='password' name='password' minlength='10' required></label>"
                 "<label>Repeat password <input type='password' name='confirm' minlength='10' required></label>"
                 "<button type='submit'>Save password</button></form></body></html>";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "text/html", html);
     }
 
@@ -309,6 +312,7 @@ private:
         body += "\"gnss\":\"" + String(toString(config_->components.gnss)) + "\",";
         body += "\"mqtt_enabled\":" + String(config_->mqtt.enabled ? "true" : "false") + ",";
         body += "\"mqtt_host\":\"" + jsonEscape(config_->mqtt.host) + "\"}";
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "application/json", body);
     }
 
