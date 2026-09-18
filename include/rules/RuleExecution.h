@@ -11,6 +11,7 @@ namespace multibus::rules {
 enum class ExecutableAction : uint8_t {
     None,
     UploadData,
+    RawRs485,
     Reboot,
     Unsupported,
 };
@@ -18,6 +19,8 @@ enum class ExecutableAction : uint8_t {
 struct ActionPlan {
     ExecutableAction action = ExecutableAction::None;
     uint32_t delayMs = 0;
+    const uint8_t* payload = nullptr;
+    uint8_t payloadLength = 0;
 };
 
 inline bool matchesTimeCondition(const StoredFrame& frame,
@@ -81,7 +84,17 @@ inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
         return plan;
     }
 
-    if (actionKind == 0x04U && frame.length == 8) {
+    if (actionKind == 0x03U && frame.length >= 11) {
+        const uint8_t messageLength = frame.data[8];
+        if (messageLength < 2 || messageLength > 48 ||
+            frame.length != static_cast<size_t>(9U + messageLength)) {
+            plan.action = ExecutableAction::Unsupported;
+            return plan;
+        }
+        plan.action = ExecutableAction::RawRs485;
+        plan.payload = frame.data + 9;
+        plan.payloadLength = messageLength;
+    } else if (actionKind == 0x04U && frame.length == 8) {
         plan.action = ExecutableAction::UploadData;
     } else if (actionKind == 0x06U && frame.length == 8) {
         plan.action = ExecutableAction::Reboot;
