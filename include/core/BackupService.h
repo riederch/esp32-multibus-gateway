@@ -9,7 +9,7 @@ namespace multibus {
 
 class BackupService {
 public:
-    static constexpr uint32_t BACKUP_SCHEMA_VERSION = 2;
+    static constexpr uint32_t BACKUP_SCHEMA_VERSION = 3;
 
     bool exportConfig(const DeviceConfig& config, String& output) const {
         JsonDocument doc;
@@ -39,6 +39,16 @@ public:
         lorawan["class_c"] = config.lorawan.classC;
         lorawan["extension_fport"] = config.lorawan.extensionFPort;
 
+        JsonObject mqtt = doc["mqtt"].to<JsonObject>();
+        mqtt["enabled"] = config.mqtt.enabled;
+        mqtt["host"] = config.mqtt.host;
+        mqtt["port"] = config.mqtt.port;
+        mqtt["username"] = config.mqtt.username;
+        mqtt["password"] = config.mqtt.password;
+        mqtt["topic_prefix"] = config.mqtt.topicPrefix;
+        mqtt["publish_interval_seconds"] = config.mqtt.publishIntervalSeconds;
+        mqtt["retain_state"] = config.mqtt.retainState;
+
         output = "";
         serializeJsonPretty(doc, output);
         return !output.isEmpty();
@@ -56,11 +66,13 @@ public:
             error = "unsupported-format";
             return false;
         }
-        if ((doc["backup_schema"] | 0U) != BACKUP_SCHEMA_VERSION) {
+        const uint32_t backupSchema = doc["backup_schema"] | 0U;
+        const uint32_t configSchema = doc["config_schema"] | 0U;
+        if (backupSchema < 2 || backupSchema > BACKUP_SCHEMA_VERSION) {
             error = "unsupported-backup-schema";
             return false;
         }
-        if ((doc["config_schema"] | 0U) != DEVICE_CONFIG_SCHEMA_VERSION) {
+        if (configSchema < 2 || configSchema > DEVICE_CONFIG_SCHEMA_VERSION) {
             error = "unsupported-config-schema";
             return false;
         }
@@ -76,7 +88,9 @@ public:
         const JsonObjectConst components = doc["components"].as<JsonObjectConst>();
         const JsonObjectConst network = doc["network"].as<JsonObjectConst>();
         const JsonObjectConst lorawan = doc["lorawan"].as<JsonObjectConst>();
-        if (components.isNull() || network.isNull() || lorawan.isNull()) {
+        const JsonObjectConst mqtt = doc["mqtt"].as<JsonObjectConst>();
+        if (components.isNull() || network.isNull() || lorawan.isNull() ||
+            (backupSchema >= 3 && mqtt.isNull())) {
             error = "missing-configuration-section";
             return false;
         }
@@ -102,6 +116,17 @@ public:
         next.lorawan.classC = lorawan["class_c"] | true;
         next.lorawan.extensionFPort = lorawan["extension_fport"] | LORAWAN_DEFAULT_EXTENSION_FPORT;
 
+        if (backupSchema >= 3) {
+            next.mqtt.enabled = mqtt["enabled"] | false;
+            next.mqtt.host = String(mqtt["host"] | "");
+            next.mqtt.port = mqtt["port"] | 1883;
+            next.mqtt.username = String(mqtt["username"] | "");
+            next.mqtt.password = String(mqtt["password"] | "");
+            next.mqtt.topicPrefix = String(mqtt["topic_prefix"] | "multibus");
+            next.mqtt.publishIntervalSeconds = mqtt["publish_interval_seconds"] | 30;
+            next.mqtt.retainState = mqtt["retain_state"] | true;
+        }
+
         const auto validation = validateConfig(next.components);
         if (validation != ConfigValidationResult::Ok) {
             error = toString(validation);
@@ -109,6 +134,10 @@ public:
         }
         if (!validateLoRaWanConfig(next.lorawan)) {
             error = "invalid-lorawan-config";
+            return false;
+        }
+        if (!next.mqtt.valid()) {
+            error = "invalid-mqtt-config";
             return false;
         }
 
