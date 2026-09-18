@@ -5,6 +5,7 @@
 
 #include "lorawan/FPort85Codec.h"
 
+using multibus::lorawan::BasicControlCommand;
 using multibus::lorawan::DecodeStatus;
 using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
@@ -175,7 +176,39 @@ static void testCollectionException() {
     assert(memcmp(encoded, expected, sizeof(expected)) == 0);
 }
 
+static void testRebootReferenceVector() {
+    const uint8_t payload[] = {0xff, 0x10, 0xff};
+    BasicControlCommand command = BasicControlCommand::Rejoin;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeBasicControlCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command == BasicControlCommand::Reboot);
+}
+
+static void testRejoinReferenceVector() {
+    const uint8_t payload[] = {0xff, 0x04, 0xff};
+    BasicControlCommand command = BasicControlCommand::Reboot;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeBasicControlCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command == BasicControlCommand::Rejoin);
+}
+
+static void testBasicControlRejectsInvalidMagic() {
+    const uint8_t payload[] = {0xff, 0x10, 0x00};
+    BasicControlCommand command = BasicControlCommand::Rejoin;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeBasicControlCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 int main() {
+    testRebootReferenceVector();
+    testRejoinReferenceVector();
+    testBasicControlRejectsInvalidMagic();
     testRs485SettingsReferenceVector();
     testRs485SettingsAcceptsProtocolValues();
     testRs485SettingsRejectsUnknownBaud();
