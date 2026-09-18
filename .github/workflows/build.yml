@@ -46,6 +46,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_report_scheduler_test.cpp -o /tmp/fport85_report_scheduler_test
           /tmp/fport85_report_scheduler_test
 
+      - name: Run FPort 85 alarm tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_alarm_test.cpp -o /tmp/fport85_alarm_test
+          /tmp/fport85_alarm_test
+
       - name: Run FPort 85 history tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/fport85_history_test.cpp -o /tmp/fport85_history_test
