@@ -179,6 +179,7 @@ public:
                 defaultHostname(),
                 channels_,
                 &Application::mqttReadThunk,
+                &Application::mqttDescribeThunk,
                 &Application::mqttCommandThunk,
                 this)) {
             Serial.println("Failed to initialize MQTT service.");
@@ -325,6 +326,13 @@ private:
         return static_cast<Application*>(context)->readBoundChannel(binding, value);
     }
 
+    static bool mqttDescribeThunk(void* context,
+                                  const ChannelBinding& binding,
+                                  DataPointDescriptor& descriptor) {
+        if (context == nullptr) return false;
+        return static_cast<Application*>(context)->describeBoundChannel(binding, descriptor);
+    }
+
     static bool mqttCommandThunk(void* context,
                                  const ChannelBinding& binding,
                                  const uint8_t* payload,
@@ -339,6 +347,23 @@ private:
         if (sourceId == modbus_.sourceId()) return &modbus_;
         if (sourceId == gnss_.sourceId()) return &gnss_;
         return nullptr;
+    }
+
+    bool describeBoundChannel(const ChannelBinding& binding,
+                              DataPointDescriptor& descriptor) {
+        DataSource* source = dataSourceForId(binding.sourceId);
+        if (source == nullptr) return false;
+
+        for (size_t i = 0; i < source->pointCount(); ++i) {
+            DataPointDescriptor current;
+            if (!source->describePoint(i, current)) continue;
+            if (current.id == binding.pointId) {
+                descriptor = current;
+                if (descriptor.unit.isEmpty()) descriptor.unit = binding.unit;
+                return true;
+            }
+        }
+        return false;
     }
 
     bool readBoundChannel(const ChannelBinding& binding, DataValue& value) {

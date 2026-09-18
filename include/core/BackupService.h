@@ -48,6 +48,8 @@ public:
         mqtt["topic_prefix"] = config.mqtt.topicPrefix;
         mqtt["publish_interval_seconds"] = config.mqtt.publishIntervalSeconds;
         mqtt["retain_state"] = config.mqtt.retainState;
+        mqtt["home_assistant_discovery"] = config.mqtt.homeAssistantDiscovery;
+        mqtt["home_assistant_prefix"] = config.mqtt.homeAssistantPrefix;
 
         output = "";
         serializeJsonPretty(doc, output);
@@ -125,6 +127,8 @@ public:
             next.mqtt.topicPrefix = String(mqtt["topic_prefix"] | "multibus");
             next.mqtt.publishIntervalSeconds = mqtt["publish_interval_seconds"] | 30;
             next.mqtt.retainState = mqtt["retain_state"] | true;
+            next.mqtt.homeAssistantDiscovery = mqtt["home_assistant_discovery"] | false;
+            next.mqtt.homeAssistantPrefix = String(mqtt["home_assistant_prefix"] | "homeassistant");
         }
 
         const auto validation = validateConfig(next.components);

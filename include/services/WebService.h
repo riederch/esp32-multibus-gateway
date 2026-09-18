@@ -145,6 +145,11 @@ private:
                 "<label><input type='checkbox' name='retain_state' value='1'" +
                 String(config_->mqtt.retainState ? " checked" : "") +
                 "> Retain channel state</label>"
+                "<label><input type='checkbox' name='ha_discovery' value='1'" +
+                String(config_->mqtt.homeAssistantDiscovery ? " checked" : "") +
+                "> Enable Home Assistant discovery</label>"
+                "<label>Home Assistant discovery prefix <input name='ha_prefix' value='" +
+                escape(config_->mqtt.homeAssistantPrefix) + "' required></label>"
                 "<button type='submit'>Save MQTT and reboot</button></form></fieldset>";
 
         html += "<fieldset><legend>Backup / Restore</legend>"
@@ -309,6 +314,9 @@ private:
         next.topicPrefix = server_.arg("topic_prefix");
         next.retainState =
             server_.hasArg("retain_state") && server_.arg("retain_state") == "1";
+        next.homeAssistantDiscovery =
+            server_.hasArg("ha_discovery") && server_.arg("ha_discovery") == "1";
+        next.homeAssistantPrefix = server_.arg("ha_prefix");
 
         uint16_t port = 0;
         uint16_t publishInterval = 0;

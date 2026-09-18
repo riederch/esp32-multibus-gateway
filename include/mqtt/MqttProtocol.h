@@ -85,6 +85,35 @@ inline bool makeChannelCommandWildcard(const char* prefix,
     return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
+inline bool validHomeAssistantComponent(const char* component) {
+    if (component == nullptr) return false;
+    return strcmp(component, "sensor") == 0 ||
+           strcmp(component, "binary_sensor") == 0 ||
+           strcmp(component, "number") == 0 ||
+           strcmp(component, "switch") == 0;
+}
+
+inline bool makeHomeAssistantDiscoveryTopic(const char* discoveryPrefix,
+                                            const char* component,
+                                            const char* deviceId,
+                                            uint16_t channelId,
+                                            char* output,
+                                            size_t capacity) {
+    if (!validTopicPrefix(discoveryPrefix) ||
+        !validHomeAssistantComponent(component) ||
+        !validDeviceId(deviceId) ||
+        channelId == 0 || output == nullptr || capacity == 0) {
+        return false;
+    }
+    const int written = snprintf(
+        output, capacity, "%s/%s/%s_ch%u/config",
+        discoveryPrefix,
+        component,
+        deviceId,
+        static_cast<unsigned>(channelId));
+    return written > 0 && static_cast<size_t>(written) < capacity;
+}
+
 inline bool makeAvailabilityTopic(const char* prefix,
                                   const char* deviceId,
                                   char* output,

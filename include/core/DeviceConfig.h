@@ -38,11 +38,15 @@ struct MqttConfig {
     String topicPrefix = "multibus";
     uint16_t publishIntervalSeconds = 30;
     bool retainState = true;
+    bool homeAssistantDiscovery = false;
+    String homeAssistantPrefix = "homeassistant";
 
     bool valid() const {
         if (port == 0 || publishIntervalSeconds < 1 || publishIntervalSeconds > 3600) return false;
         if (topicPrefix.isEmpty() || topicPrefix.length() > 64 ||
             !mqtt::validTopicPrefix(topicPrefix.c_str())) return false;
+        if (homeAssistantPrefix.isEmpty() || homeAssistantPrefix.length() > 64 ||
+            !mqtt::validTopicPrefix(homeAssistantPrefix.c_str())) return false;
         if (enabled && host.isEmpty()) return false;
         return true;
     }

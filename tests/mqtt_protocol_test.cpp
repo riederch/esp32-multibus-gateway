@@ -8,6 +8,7 @@ using multibus::mqtt::makeAvailabilityTopic;
 using multibus::mqtt::makeChannelCommandTopic;
 using multibus::mqtt::makeChannelCommandWildcard;
 using multibus::mqtt::makeChannelStateTopic;
+using multibus::mqtt::makeHomeAssistantDiscoveryTopic;
 using multibus::mqtt::parseChannelCommandTopic;
 using multibus::mqtt::validTopicPrefix;
 
@@ -25,6 +26,15 @@ static void testTopics() {
 
     assert(makeAvailabilityTopic("multibus", "gw01", topic, sizeof(topic)));
     assert(strcmp(topic, "multibus/gw01/status") == 0);
+}
+
+static void testHomeAssistantDiscoveryTopic() {
+    char topic[160] = {0};
+    assert(makeHomeAssistantDiscoveryTopic(
+        "homeassistant", "sensor", "gw01", 12, topic, sizeof(topic)));
+    assert(strcmp(topic, "homeassistant/sensor/gw01_ch12/config") == 0);
+    assert(!makeHomeAssistantDiscoveryTopic(
+        "homeassistant", "light", "gw01", 12, topic, sizeof(topic)));
 }
 
 static void testCommandParsing() {
@@ -55,6 +65,7 @@ static void testPrefixValidation() {
 
 int main() {
     testTopics();
+    testHomeAssistantDiscoveryTopic();
     testCommandParsing();
     testPrefixValidation();
     return 0;

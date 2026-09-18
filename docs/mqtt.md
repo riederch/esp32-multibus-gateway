@@ -94,6 +94,24 @@ importable and restores MQTT as disabled/default-configured.
 Backups currently contain credentials in clear text, like the existing Wi-Fi and
 LoRaWAN secrets.
 
+## Home Assistant discovery
+
+Home Assistant MQTT discovery is optional and disabled by default. When enabled,
+MultiBus publishes retained discovery configuration under the configured
+discovery prefix (default `homeassistant`).
+
+Entity mapping follows the Core descriptor:
+
+- read-only Boolean -> `binary_sensor`
+- read-only numeric/text -> `sensor`
+- writable Boolean -> `switch`
+- writable numeric -> `number`
+
+Discovery reuses the same state, command and availability topics described
+above. The discovery signature is recalculated from the active ChannelRegistry,
+so newly created or modified channels are published without requiring a broker
+reconnect.
+
 ## Remaining optional work
 
-Home Assistant MQTT discovery remains an optional backlog item.
+MQTT TLS/certificate configuration remains an optional backlog item.
