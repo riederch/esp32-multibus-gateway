@@ -9,6 +9,7 @@
 
 #include "core/ChannelRegistry.h"
 #include "core/DeviceConfig.h"
+#include "core/EventBus.h"
 #include "mqtt/MqttProtocol.h"
 
 namespace multibus {
@@ -18,6 +19,8 @@ public:
     using ReadHandler = bool (*)(void*, const ChannelBinding&, DataValue&);
     using DescribeHandler = bool (*)(void*, const ChannelBinding&, DataPointDescriptor&);
     using CommandHandler = bool (*)(void*, const ChannelBinding&, const uint8_t*, size_t);
+    using EventNextHandler = bool (*)(void*, uint64_t&, EventRecord&);
+    using EventMissedHandler = uint64_t (*)(void*, uint64_t);
 
     bool begin(const MqttConfig& config,
                const String& deviceId,
@@ -25,12 +28,16 @@ public:
                ReadHandler readHandler,
                DescribeHandler describeHandler,
                CommandHandler commandHandler,
+               EventNextHandler eventNextHandler,
+               EventMissedHandler eventMissedHandler,
                void* context) {
         config_ = &config;
         channels_ = &channels;
         readHandler_ = readHandler;
         describeHandler_ = describeHandler;
         commandHandler_ = commandHandler;
+        eventNextHandler_ = eventNextHandler;
+        eventMissedHandler_ = eventMissedHandler;
         context_ = context;
         deviceId_ = deviceId;
 
@@ -77,6 +84,7 @@ public:
         client_.loop();
         connected_ = true;
         refreshHomeAssistantDiscovery();
+        publishPendingEvents();
 
         const uint32_t now = millis();
         if (static_cast<int32_t>(now - nextPublishAtMs_) >= 0) {
@@ -96,6 +104,9 @@ public:
     uint32_t commandFailures() const { return commandFailures_; }
     uint32_t discoveryPublishes() const { return discoveryPublishes_; }
     uint32_t discoveryFailures() const { return discoveryFailures_; }
+    uint32_t eventPublishes() const { return eventPublishes_; }
+    uint32_t eventPublishFailures() const { return eventPublishFailures_; }
+    uint64_t eventMissed() const { return eventMissed_; }
 
 private:
     bool connect() {
@@ -394,6 +405,67 @@ private:
         return true;
     }
 
+    static const char* severityName(EventSeverity severity) {
+        switch (severity) {
+            case EventSeverity::Info: return "info";
+            case EventSeverity::Warning: return "warning";
+            case EventSeverity::Error: return "error";
+            default: return "info";
+        }
+    }
+
+    bool publishEvent(const EventRecord& event, uint64_t missedBefore) {
+        if (config_ == nullptr) return false;
+
+        char topic[192] = {0};
+        if (!mqtt::makeEventTopic(
+                config_->topicPrefix.c_str(),
+                deviceId_.c_str(),
+                topic,
+                sizeof(topic))) {
+            ++eventPublishFailures_;
+            return false;
+        }
+
+        JsonDocument doc;
+        doc["sequence"] = event.sequence;
+        doc["timestamp"] = event.timestampUnix;
+        doc["severity"] = severityName(event.severity);
+        doc["source"] = event.source;
+        doc["type"] = event.type;
+        if (event.detail[0] != '\0') doc["detail"] = event.detail;
+        if (missedBefore > 0) doc["missed_before"] = missedBefore;
+
+        String payload;
+        serializeJson(doc, payload);
+        if (!client_.publish(topic, payload.c_str(), false)) {
+            ++eventPublishFailures_;
+            return false;
+        }
+
+        ++eventPublishes_;
+        return true;
+    }
+
+    void publishPendingEvents() {
+        if (eventNextHandler_ == nullptr || eventMissedHandler_ == nullptr ||
+            !client_.connected()) {
+            return;
+        }
+
+        for (uint8_t i = 0; i < kMaxEventsPerLoop; ++i) {
+            uint64_t candidateCursor = eventCursor_;
+            EventRecord event;
+            if (!eventNextHandler_(context_, candidateCursor, event)) return;
+
+            const uint64_t missedBefore = eventMissedHandler_(context_, eventCursor_);
+            if (!publishEvent(event, missedBefore)) return;
+
+            eventCursor_ = candidateCursor;
+            eventMissed_ += missedBefore;
+        }
+    }
+
     void publishAll() {
         if (channels_ == nullptr || readHandler_ == nullptr || config_ == nullptr) return;
 
@@ -480,12 +552,15 @@ private:
     }
 
     static constexpr uint32_t kReconnectIntervalMs = 5000;
+    static constexpr uint8_t kMaxEventsPerLoop = 4;
 
     const MqttConfig* config_ = nullptr;
     ChannelRegistry* channels_ = nullptr;
     ReadHandler readHandler_ = nullptr;
     DescribeHandler describeHandler_ = nullptr;
     CommandHandler commandHandler_ = nullptr;
+    EventNextHandler eventNextHandler_ = nullptr;
+    EventMissedHandler eventMissedHandler_ = nullptr;
     void* context_ = nullptr;
     String deviceId_;
     WiFiClient networkClient_;
@@ -499,6 +574,10 @@ private:
     uint32_t commandFailures_ = 0;
     uint32_t discoveryPublishes_ = 0;
     uint32_t discoveryFailures_ = 0;
+    uint32_t eventPublishes_ = 0;
+    uint32_t eventPublishFailures_ = 0;
+    uint64_t eventMissed_ = 0;
+    uint64_t eventCursor_ = 0;
     uint32_t discoverySignature_ = 0;
     DiscoveryEntry discovered_[ChannelRegistry::kRecommendedMaxChannels];
     size_t discoveredCount_ = 0;
