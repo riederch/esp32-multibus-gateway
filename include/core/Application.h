@@ -279,7 +279,7 @@ private:
         if (static_cast<int32_t>(now - nextHistorySnapshotAtMs_) < 0) return;
         nextHistorySnapshotAtMs_ = now + static_cast<uint32_t>(reportScheduler_.settings().seconds) * 1000UL;
 
-        const time_t unixNow = time(nullptr);
+        const time_t unixNow = ::time(nullptr);
         if (unixNow <= 0) {
             ++historySnapshotsSkippedNoTime_;
             return;
