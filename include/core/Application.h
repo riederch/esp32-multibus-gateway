@@ -20,6 +20,8 @@
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
+#include "time/TimeSettings.h"
+#include "time/TimeSettingsStore.h"
 
 namespace multibus {
 
@@ -44,6 +46,10 @@ public:
         }
         if (!reportSettingsStore_.begin()) {
             Serial.println("Failed to open FPort 85 report settings store.");
+            return false;
+        }
+        if (!timeSettingsStore_.begin()) {
+            Serial.println("Failed to open time settings store.");
             return false;
         }
 
@@ -100,6 +106,10 @@ public:
         }
         if (!loadReportSettings()) {
             Serial.println("Failed to load persisted FPort 85 report settings.");
+            return false;
+        }
+        if (!loadTimeSettings()) {
+            Serial.println("Failed to load persisted time settings.");
             return false;
         }
         if (!loadModbusChannels()) {
@@ -162,6 +172,7 @@ private:
         ReportInterval,
         BasicControl,
         PeriodicReportEnquiry,
+        UtcTimezone,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -173,6 +184,7 @@ private:
         lorawan::ReportIntervalCommand reportInterval;
         lorawan::BasicControlCommand basicControl = lorawan::BasicControlCommand::Rejoin;
         lorawan::PeriodicReportEnquiryCommand periodicReportEnquiry;
+        lorawan::UtcTimezoneCommand utcTimezone;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -188,6 +200,7 @@ private:
         rs485SettingsStore_.clear();
         modbusMasterSettingsStore_.clear();
         reportSettingsStore_.clear();
+        timeSettingsStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -273,6 +286,14 @@ private:
                     return false;
                 }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kUtcTimezoneType) {
+                parsed.kind = ParsedCommandKind::UtcTimezone;
+                if (lorawan::FPort85Codec::decodeUtcTimezoneCommand(
+                        payload + offset, length - offset, parsed.utcTimezone, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
                 if (lorawan::FPort85Codec::decodePeriodicReportEnquiryCommand(
@@ -340,6 +361,9 @@ private:
                     break;
                 case ParsedCommandKind::PeriodicReportEnquiry:
                     reportScheduler_.requestImmediateReport();
+                    break;
+                case ParsedCommandKind::UtcTimezone:
+                    if (!applyUtcTimezoneCommand(command.utcTimezone)) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
@@ -444,6 +468,20 @@ private:
         return false;
     }
 
+    bool applyUtcTimezoneCommand(const lorawan::UtcTimezoneCommand& command) {
+        if (!time::validUtcOffsetMinutes(command.offsetMinutes)) return false;
+
+        time::Settings updated = timeSettings_;
+        updated.utcOffsetMinutes = command.offsetMinutes;
+        if (!timeSettingsStore_.save(updated)) return false;
+        timeSettings_ = updated;
+        return true;
+    }
+
+    bool loadTimeSettings() {
+        return timeSettingsStore_.load(timeSettings_);
+    }
+
     bool loadRs485Settings() {
         modbus::Rs485SerialSettings settings;
         if (!rs485SettingsStore_.load(settings)) return false;
@@ -527,6 +565,7 @@ private:
         Serial.printf("  Compatibility channels: %u\n", static_cast<unsigned>(channels_.size()));
         Serial.printf("  Compatibility report interval: %u s\n",
                       static_cast<unsigned>(reportScheduler_.settings().seconds));
+        Serial.printf("  UTC offset: %+d min\n", static_cast<int>(timeSettings_.utcOffsetMinutes));
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
@@ -559,6 +598,8 @@ private:
     modbus::ModbusMasterSettingsStore modbusMasterSettingsStore_;
     lorawan::FPort85ReportSettingsStore reportSettingsStore_;
     lorawan::FPort85ReportScheduler reportScheduler_;
+    time::SettingsStore timeSettingsStore_;
+    time::Settings timeSettings_;
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;

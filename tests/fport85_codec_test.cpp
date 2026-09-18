@@ -14,6 +14,7 @@ using multibus::lorawan::ModbusChannelOperation;
 using multibus::lorawan::ModbusMasterSettingsCommand;
 using multibus::lorawan::PeriodicReportEnquiryCommand;
 using multibus::lorawan::Rs485SettingsCommand;
+using multibus::lorawan::UtcTimezoneCommand;
 using multibus::lorawan::Rs485SettingsEnquiryCommand;
 using multibus::lorawan::Rs485SettingsEnquiryKind;
 using multibus::modbus::PassThroughMode;
@@ -291,7 +292,38 @@ static void testPeriodicReportEnquiryRejectsInvalidMagic() {
     assert(consumed == 0);
 }
 
+static void testUtcTimezoneReferenceVector() {
+    const uint8_t payload[] = {0xff, 0xbd, 0x10, 0xff};
+    UtcTimezoneCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeUtcTimezoneCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.offsetMinutes == -240);
+}
+
+static void testUtcTimezonePositiveOffset() {
+    const uint8_t payload[] = {0xff, 0xbd, 0x78, 0x00};
+    UtcTimezoneCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeUtcTimezoneCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.offsetMinutes == 120);
+}
+
+static void testUtcTimezoneRejectsOutOfRange() {
+    const uint8_t payload[] = {0xff, 0xbd, 0x5b, 0x03}; // +859 min
+    UtcTimezoneCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeUtcTimezoneCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 int main() {
+    testUtcTimezoneReferenceVector();
+    testUtcTimezonePositiveOffset();
+    testUtcTimezoneRejectsOutOfRange();
     testPeriodicReportEnquiryReferenceVector();
     testPeriodicReportEnquiryRejectsInvalidMagic();
     testRebootReferenceVector();
