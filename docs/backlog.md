@@ -12,9 +12,8 @@ Deferred optional features that are compatible with the current architecture.
 
 ## MQTT
 
-- publish normalized channels/events
-- subscribe to whitelisted commands
 - optional Home Assistant discovery
+- MQTT TLS/certificate configuration for untrusted networks
 
 ## Advanced GNSS
 
