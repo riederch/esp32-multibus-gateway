@@ -179,6 +179,71 @@ static void testFailedSendRetainsIdenticalPacketForRetry() {
     assert(memcmp(first, retry, firstLength) == 0);
 }
 
+static void testImmediateReportDoesNotShiftPeriodicSchedule() {
+    FPort85ReportScheduler scheduler;
+    ReportIntervalSettings settings;
+    settings.seconds = 60;
+    scheduler.begin(settings, 0);
+
+    ChannelConfig channel = input16Channel(0);
+    DecodedScalar value;
+    value.kind = ScalarKind::SignedInteger;
+    value.signedValue = 7;
+    scheduler.recordPoll(channel, true, &value, 1);
+
+    scheduler.requestImmediateReport();
+
+    uint8_t payload[51] = {0};
+    size_t written = 0;
+    assert(scheduler.preparePacket(1000, payload, sizeof(payload), written) ==
+           ReportBuildStatus::PacketReady);
+    scheduler.markPacketSent(1000);
+    assert(!scheduler.reportInProgress());
+    assert(scheduler.nextReportAtMs() == 60000);
+
+    assert(scheduler.preparePacket(59999, payload, sizeof(payload), written) ==
+           ReportBuildStatus::NotDue);
+    assert(scheduler.preparePacket(60000, payload, sizeof(payload), written) ==
+           ReportBuildStatus::PacketReady);
+}
+
+static void testImmediateRequestQueuesBehindActiveReport() {
+    FPort85ReportScheduler scheduler;
+    ReportIntervalSettings settings;
+    settings.seconds = 60;
+    scheduler.begin(settings, 0);
+
+    for (uint8_t slot = 0; slot < 3; ++slot) {
+        ChannelConfig channel;
+        channel.slot = slot;
+        channel.slaveId = 1;
+        channel.dataType = WireDataType::Input64ABCDEFGH;
+        channel.quantity = 2;
+
+        DecodedScalar values[2];
+        values[0].kind = ScalarKind::UnsignedInteger;
+        values[0].unsignedValue = slot + 1U;
+        values[1].kind = ScalarKind::UnsignedInteger;
+        values[1].unsignedValue = slot + 11U;
+        scheduler.recordPoll(channel, true, values, 2);
+    }
+
+    uint8_t payload[51] = {0};
+    size_t written = 0;
+    assert(scheduler.preparePacket(60000, payload, sizeof(payload), written) ==
+           ReportBuildStatus::PacketReady);
+    scheduler.requestImmediateReport();
+
+    scheduler.markPacketSent(60000);
+    assert(scheduler.preparePacket(60001, payload, sizeof(payload), written) ==
+           ReportBuildStatus::PacketReady);
+    scheduler.markPacketSent(60001);
+    assert(!scheduler.reportInProgress());
+
+    assert(scheduler.preparePacket(60002, payload, sizeof(payload), written) ==
+           ReportBuildStatus::PacketReady);
+}
+
 int main() {
     testReportIntervalReferenceVector();
     testReportIntervalRange();
@@ -186,5 +251,7 @@ int main() {
     testFailureBecomesCollectionException();
     testQuantityTwoChannelIsNeverSplit();
     testFailedSendRetainsIdenticalPacketForRetry();
+    testImmediateReportDoesNotShiftPeriodicSchedule();
+    testImmediateRequestQueuesBehindActiveReport();
     return 0;
 }
