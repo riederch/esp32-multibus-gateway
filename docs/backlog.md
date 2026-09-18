@@ -10,10 +10,6 @@ Deferred optional features that are compatible with the current architecture.
 - remain mutually exclusive with LoRaWAN on the onboard radio
 - review licensing implications before integrating third-party Meshtastic code
 
-## MQTT
-
-- MQTT TLS/certificate configuration for untrusted networks
-
 ## Advanced GNSS
 
 - geofencing
