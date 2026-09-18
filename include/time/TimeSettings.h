@@ -9,7 +9,7 @@ struct Settings {
 };
 
 inline bool validUtcOffsetMinutes(int16_t minutes) {
-    return minutes >= -720 && minutes <= 840 && (minutes % 15) == 0;
+    return minutes >= -720 && minutes <= 840;
 }
 
 } // namespace multibus::time
