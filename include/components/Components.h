@@ -89,6 +89,7 @@ public:
     bool active() const { return active_; }
     bool provisioned() const { return provisioned_; }
     bool connected() const override { return active_ && radio_.joined(); }
+    bool requestRejoin() { return active_ && radio_.requestRejoin(); }
     bool send(const TransportEnvelope& envelope) override {
         return active_ && radio_.send(envelope);
     }
