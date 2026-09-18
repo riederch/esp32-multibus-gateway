@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <time.h>
 #include <vector>
 #include "AppConfig.h"
@@ -31,6 +32,7 @@
 #include "rules/RuleExecution.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
+#include "services/MqttService.h"
 #include "services/WebService.h"
 #include "time/TimeSettings.h"
 #include "time/TimeSettingsStore.h"
@@ -172,11 +174,27 @@ public:
             return false;
         }
 
+        if (!mqtt_.begin(
+                config_.mqtt,
+                defaultHostname(),
+                channels_,
+                &Application::mqttReadThunk,
+                &Application::mqttCommandThunk,
+                this)) {
+            Serial.println("Failed to initialize MQTT service.");
+            return false;
+        }
+
         capabilities_.add("board.user-button");
         capabilities_.add("board.status-led");
         capabilities_.add("board.factory-reset");
         capabilities_.add("network.wifi");
         capabilities_.add("network.webui");
+        if (config_.mqtt.enabled) {
+            capabilities_.add("transport.mqtt");
+            capabilities_.add("mqtt.publish");
+            capabilities_.add("mqtt.commands");
+        }
         if (network_.apActive()) capabilities_.add("network.ap");
         if (network_.clientConnected()) capabilities_.add("network.client");
 
@@ -192,6 +210,7 @@ public:
     void loop() {
         board_.loop();
         network_.loop();
+        mqtt_.loop();
         web_.loop();
         victron_.loop();
         lora_.loop();
@@ -297,6 +316,92 @@ private:
         historyStore_.clear();
         historyRetransmissionStore_.clear();
         ruleStore_.clear();
+    }
+
+    static bool mqttReadThunk(void* context,
+                              const ChannelBinding& binding,
+                              DataValue& value) {
+        if (context == nullptr) return false;
+        return static_cast<Application*>(context)->readBoundChannel(binding, value);
+    }
+
+    static bool mqttCommandThunk(void* context,
+                                 const ChannelBinding& binding,
+                                 const uint8_t* payload,
+                                 size_t length) {
+        if (context == nullptr) return false;
+        return static_cast<Application*>(context)->writeBoundChannelFromMqtt(
+            binding, payload, length);
+    }
+
+    DataSource* dataSourceForId(const String& sourceId) {
+        if (sourceId == victron_.sourceId()) return &victron_;
+        if (sourceId == modbus_.sourceId()) return &modbus_;
+        if (sourceId == gnss_.sourceId()) return &gnss_;
+        return nullptr;
+    }
+
+    bool readBoundChannel(const ChannelBinding& binding, DataValue& value) {
+        DataSource* source = dataSourceForId(binding.sourceId);
+        return source != nullptr && source->readPoint(binding.pointId, value);
+    }
+
+    bool writeBoundChannelFromMqtt(const ChannelBinding& binding,
+                                   const uint8_t* payload,
+                                   size_t length) {
+        if (!binding.writable || payload == nullptr || length == 0 || length > 512) return false;
+
+        DataSource* source = dataSourceForId(binding.sourceId);
+        if (source == nullptr) return false;
+
+        DataPointDescriptor descriptor;
+        bool foundDescriptor = false;
+        for (size_t i = 0; i < source->pointCount(); ++i) {
+            DataPointDescriptor current;
+            if (!source->describePoint(i, current)) continue;
+            if (current.id == binding.pointId) {
+                descriptor = current;
+                foundDescriptor = true;
+                break;
+            }
+        }
+        if (!foundDescriptor || !descriptor.writable) return false;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, payload, length) != DeserializationError::Ok ||
+            doc["value"].isNull()) {
+            return false;
+        }
+
+        JsonVariantConst input = doc["value"];
+        DataValue value;
+        value.valid = true;
+        value.type = descriptor.type;
+
+        switch (descriptor.type) {
+            case DataType::Boolean:
+                if (!input.is<bool>()) return false;
+                value.booleanValue = input.as<bool>();
+                break;
+            case DataType::Int64:
+                if (!input.is<int64_t>()) return false;
+                value.intValue = input.as<int64_t>();
+                break;
+            case DataType::UInt64:
+                if (!input.is<uint64_t>()) return false;
+                value.uintValue = input.as<uint64_t>();
+                break;
+            case DataType::Float64:
+                if (!input.is<double>() && !input.is<int64_t>() && !input.is<uint64_t>()) return false;
+                value.floatValue = input.as<double>();
+                break;
+            case DataType::Text:
+                if (!input.is<const char*>()) return false;
+                value.textValue = input.as<const char*>();
+                break;
+        }
+
+        return source->writePoint(binding.pointId, value);
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -1812,6 +1917,10 @@ private:
                       static_cast<unsigned>(master.maxResponseTimeMs),
                       static_cast<unsigned>(master.maxRetryTimes));
         Serial.printf("  Wi-Fi: %s\n", network_.apActive() ? "commissioning AP" : "client");
+        Serial.printf("  MQTT: %s%s%s\n",
+                      config_.mqtt.enabled ? (mqtt_.connected() ? "connected" : "enabled/disconnected") : "disabled",
+                      config_.mqtt.enabled ? " @ " : "",
+                      config_.mqtt.enabled ? config_.mqtt.host.c_str() : "");
         Serial.printf("  Address: %s\n", network_.address().toString().c_str());
         Serial.println("Capabilities:");
         for (const auto& capability : capabilities_.all()) {
@@ -1853,6 +1962,7 @@ private:
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;
+    MqttService mqtt_;
     WebService web_;
     VictronComponent victron_;
     LoRaComponent lora_;
