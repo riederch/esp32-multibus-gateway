@@ -61,6 +61,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_state_test.cpp -o /tmp/rule_state_test
           /tmp/rule_state_test
 
+      - name: Run rule execution tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_execution_test.cpp -o /tmp/rule_execution_test
+          /tmp/rule_execution_test
+
       - name: Run Modbus RTU codec tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/modbus_rtu_codec_test.cpp -o /tmp/modbus_rtu_codec_test
