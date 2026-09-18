@@ -7,6 +7,7 @@
 #include "AppConfig.h"
 #include "CapabilityRegistry.h"
 #include "ChannelRegistry.h"
+#include "CommandBus.h"
 #include "ConfigStore.h"
 #include "DeviceConfig.h"
 #include "DeviceIdentity.h"
@@ -217,6 +218,7 @@ public:
         board_.loop();
         network_.loop();
         mqtt_.loop();
+        processCoreCommands();
         web_.loop();
         victron_.loop();
         lora_.loop();
@@ -413,21 +415,8 @@ private:
                                    size_t length) {
         if (!binding.writable || payload == nullptr || length == 0 || length > 512) return false;
 
-        DataSource* source = dataSourceForId(binding.sourceId);
-        if (source == nullptr) return false;
-
         DataPointDescriptor descriptor;
-        bool foundDescriptor = false;
-        for (size_t i = 0; i < source->pointCount(); ++i) {
-            DataPointDescriptor current;
-            if (!source->describePoint(i, current)) continue;
-            if (current.id == binding.pointId) {
-                descriptor = current;
-                foundDescriptor = true;
-                break;
-            }
-        }
-        if (!foundDescriptor || !descriptor.writable) return false;
+        if (!describeBoundChannel(binding, descriptor) || !descriptor.writable) return false;
 
         JsonDocument doc;
         if (deserializeJson(doc, payload, length) != DeserializationError::Ok ||
@@ -436,34 +425,129 @@ private:
         }
 
         JsonVariantConst input = doc["value"];
-        DataValue value;
-        value.valid = true;
-        value.type = descriptor.type;
+        ChannelWriteCommand command;
+        command.channelId = binding.channelId;
+        if (!setCommandText(command.origin, sizeof(command.origin), "mqtt")) return false;
 
         switch (descriptor.type) {
             case DataType::Boolean:
                 if (!input.is<bool>()) return false;
-                value.booleanValue = input.as<bool>();
+                command.valueType = CommandValueType::Boolean;
+                command.booleanValue = input.as<bool>();
                 break;
             case DataType::Int64:
                 if (!input.is<int64_t>()) return false;
-                value.intValue = input.as<int64_t>();
+                command.valueType = CommandValueType::Int64;
+                command.intValue = input.as<int64_t>();
                 break;
             case DataType::UInt64:
                 if (!input.is<uint64_t>()) return false;
-                value.uintValue = input.as<uint64_t>();
+                command.valueType = CommandValueType::UInt64;
+                command.uintValue = input.as<uint64_t>();
                 break;
             case DataType::Float64:
                 if (!input.is<double>() && !input.is<int64_t>() && !input.is<uint64_t>()) return false;
-                value.floatValue = input.as<double>();
+                command.valueType = CommandValueType::Float64;
+                command.floatValue = input.as<double>();
                 break;
             case DataType::Text:
                 if (!input.is<const char*>()) return false;
-                value.textValue = input.as<const char*>();
+                command.valueType = CommandValueType::Text;
+                if (!setCommandText(
+                        command.textValue,
+                        sizeof(command.textValue),
+                        input.as<const char*>(),
+                        true)) {
+                    return false;
+                }
                 break;
         }
 
-        return source->writePoint(binding.pointId, value);
+        if (!commands_.enqueue(command)) {
+            ++commandQueueFailures_;
+            emitCoreEvent("commands", "queue-full", EventSeverity::Warning, "origin=mqtt");
+            return false;
+        }
+
+        ++commandsQueued_;
+        return true;
+    }
+
+    void processCoreCommands() {
+        for (uint8_t processed = 0; processed < 4; ++processed) {
+            ChannelWriteCommand command;
+            if (!commands_.dequeue(command)) return;
+
+            const ChannelBinding* binding = channels_.find(command.channelId);
+            if (binding == nullptr || !binding->enabled || !binding->writable) {
+                ++commandExecutionFailures_;
+                char detail[64] = {0};
+                snprintf(detail, sizeof(detail), "seq=%llu channel=%u missing",
+                         static_cast<unsigned long long>(command.sequence),
+                         static_cast<unsigned>(command.channelId));
+                emitCoreEvent("commands", "rejected", EventSeverity::Warning, detail);
+                continue;
+            }
+
+            DataSource* source = dataSourceForId(binding->sourceId);
+            DataPointDescriptor descriptor;
+            if (source == nullptr || !describeBoundChannel(*binding, descriptor) ||
+                !descriptor.writable) {
+                ++commandExecutionFailures_;
+                emitCoreEvent("commands", "rejected", EventSeverity::Warning, "target-not-writable");
+                continue;
+            }
+
+            DataValue value;
+            value.valid = true;
+            bool typeMatches = true;
+            switch (command.valueType) {
+                case CommandValueType::Boolean:
+                    typeMatches = descriptor.type == DataType::Boolean;
+                    value.type = DataType::Boolean;
+                    value.booleanValue = command.booleanValue;
+                    break;
+                case CommandValueType::Int64:
+                    typeMatches = descriptor.type == DataType::Int64;
+                    value.type = DataType::Int64;
+                    value.intValue = command.intValue;
+                    break;
+                case CommandValueType::UInt64:
+                    typeMatches = descriptor.type == DataType::UInt64;
+                    value.type = DataType::UInt64;
+                    value.uintValue = command.uintValue;
+                    break;
+                case CommandValueType::Float64:
+                    typeMatches = descriptor.type == DataType::Float64;
+                    value.type = DataType::Float64;
+                    value.floatValue = command.floatValue;
+                    break;
+                case CommandValueType::Text:
+                    typeMatches = descriptor.type == DataType::Text;
+                    value.type = DataType::Text;
+                    value.textValue = command.textValue;
+                    break;
+            }
+
+            if (!typeMatches || !source->writePoint(binding->pointId, value)) {
+                ++commandExecutionFailures_;
+                char detail[80] = {0};
+                snprintf(detail, sizeof(detail), "seq=%llu channel=%u origin=%s",
+                         static_cast<unsigned long long>(command.sequence),
+                         static_cast<unsigned>(command.channelId),
+                         command.origin);
+                emitCoreEvent("commands", "execution-failed", EventSeverity::Warning, detail);
+                continue;
+            }
+
+            ++commandsExecuted_;
+            char detail[80] = {0};
+            snprintf(detail, sizeof(detail), "seq=%llu channel=%u origin=%s",
+                     static_cast<unsigned long long>(command.sequence),
+                     static_cast<unsigned>(command.channelId),
+                     command.origin);
+            emitCoreEvent("commands", "executed", EventSeverity::Info, detail);
+        }
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -2030,6 +2114,7 @@ private:
     CapabilityRegistry capabilities_;
     ChannelRegistry channels_;
     EventBus<32> events_;
+    CommandBus<16> commands_;
     ConfigStore configStore_;
     modbus::ModbusChannelStore modbusChannelStore_;
     modbus::Rs485SettingsStore rs485SettingsStore_;
@@ -2065,6 +2150,10 @@ private:
     GnssComponent gnss_;
     uint32_t eventsEmitted_ = 0;
     uint32_t eventEmitFailures_ = 0;
+    uint32_t commandsQueued_ = 0;
+    uint32_t commandsExecuted_ = 0;
+    uint32_t commandQueueFailures_ = 0;
+    uint32_t commandExecutionFailures_ = 0;
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
