@@ -114,6 +114,20 @@ inline bool makeHomeAssistantDiscoveryTopic(const char* discoveryPrefix,
     return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
+inline bool makeEventTopic(const char* prefix,
+                               const char* deviceId,
+                               char* output,
+                               size_t capacity) {
+    if (!validTopicPrefix(prefix) || !validDeviceId(deviceId) ||
+        output == nullptr || capacity == 0) {
+        return false;
+    }
+    const int written = snprintf(
+        output, capacity, "%s/%s/events",
+        prefix, deviceId);
+    return written > 0 && static_cast<size_t>(written) < capacity;
+}
+
 inline bool makeAvailabilityTopic(const char* prefix,
                                   const char* deviceId,
                                   char* output,
