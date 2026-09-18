@@ -5,6 +5,7 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 
 #include "core/ChannelRegistry.h"
 #include "core/DeviceConfig.h"
@@ -40,7 +41,12 @@ public:
             return false;
         }
 
-        client_.setClient(networkClient_);
+        if (config_->tlsEnabled) {
+            secureClient_.setCACert(config_->caCertificate.c_str());
+            client_.setClient(secureClient_);
+        } else {
+            client_.setClient(networkClient_);
+        }
         client_.setServer(config_->host.c_str(), config_->port);
         client_.setBufferSize(768);
         client_.setCallback([this](char* topic, uint8_t* payload, unsigned int length) {
@@ -483,6 +489,7 @@ private:
     void* context_ = nullptr;
     String deviceId_;
     WiFiClient networkClient_;
+    WiFiClientSecure secureClient_;
     PubSubClient client_;
     uint32_t nextReconnectAtMs_ = 0;
     uint32_t nextPublishAtMs_ = 0;

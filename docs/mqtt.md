@@ -17,8 +17,9 @@ The MQTT device identifier is derived from the ESP32 hardware identity via the
 default MultiBus hostname. It does not change when the user edits the Wi-Fi
 hostname.
 
-Current transport is plain MQTT/TCP. TLS/certificate configuration is not yet
-implemented and should be added before using MQTT across untrusted networks.
+MQTT can use plain TCP or TLS. When TLS is enabled, a CA certificate in PEM
+format is required and certificate verification remains enabled. There is no
+insecure TLS fallback.
 
 ## Topics
 
@@ -112,6 +113,12 @@ above. The discovery signature is recalculated from the active ChannelRegistry,
 so newly created or modified channels are published without requiring a broker
 reconnect.
 
-## Remaining optional work
+## TLS
 
-MQTT TLS/certificate configuration remains an optional backlog item.
+Enable **TLS with CA verification** and provide the broker's trust-anchor CA
+certificate in PEM format. A TLS-enabled configuration without a CA certificate
+is rejected.
+
+The certificate is persisted with the device configuration and included in
+configuration backups. It is public trust material rather than a private key,
+but backups still contain MQTT/Wi-Fi/LoRaWAN credentials and must be protected.
