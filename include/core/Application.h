@@ -27,6 +27,7 @@
 #include "modbus/Rs485SettingsStore.h"
 #include "rules/RuleState.h"
 #include "rules/RuleStore.h"
+#include "rules/RuleExecution.h"
 #include "services/BoardService.h"
 #include "services/NetworkService.h"
 #include "services/WebService.h"
@@ -154,6 +155,7 @@ public:
             Serial.println("Failed to load persisted rules.");
             return false;
         }
+        ruleBootEvaluationPending_ = true;
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -198,6 +200,7 @@ public:
         const bool passThroughHandled = processModbusPassThroughResponse();
         const bool basicInfoHandled = !passThroughHandled && processCompatibilityBasicInfo();
         captureModbusCompatibilitySample();
+        processRuleExecution();
         processHistoryStorage();
         const bool ruleReplyActive =
             !passThroughHandled && !basicInfoHandled && processRuleReply();
@@ -660,6 +663,111 @@ private:
         return true;
     }
 
+    struct ScheduledRuleAction {
+        bool pending = false;
+        rules::ExecutableAction action = rules::ExecutableAction::None;
+        uint32_t dueAtMs = 0;
+        uint8_t ruleId = 0;
+        uint8_t actionSlot = 0;
+    };
+
+    void cancelScheduledRuleActions(uint8_t ruleId) {
+        for (auto& scheduled : scheduledRuleActions_) {
+            if (scheduled.pending && scheduled.ruleId == ruleId) {
+                scheduled = ScheduledRuleAction{};
+            }
+        }
+    }
+
+    void scheduleRuleActions(uint8_t ruleId, const rules::RuleRecord& record) {
+        for (uint8_t actionIndex = 0; actionIndex < 3; ++actionIndex) {
+            const rules::ActionPlan plan =
+                rules::decodeExecutableAction(record.frames[actionIndex + 1U]);
+            if (plan.action == rules::ExecutableAction::None) continue;
+            if (plan.action == rules::ExecutableAction::Unsupported) {
+                ++ruleUnsupportedActions_;
+                continue;
+            }
+
+            const size_t slot =
+                (static_cast<size_t>(ruleId) - 1U) * 3U + actionIndex;
+            ScheduledRuleAction& scheduled = scheduledRuleActions_[slot];
+            scheduled.pending = true;
+            scheduled.action = plan.action;
+            scheduled.dueAtMs = millis() + plan.delayMs;
+            scheduled.ruleId = ruleId;
+            scheduled.actionSlot = actionIndex;
+        }
+        ++ruleTriggers_;
+    }
+
+    void executeDueRuleActions() {
+        const uint32_t now = millis();
+        for (auto& scheduled : scheduledRuleActions_) {
+            if (!scheduled.pending ||
+                static_cast<int32_t>(now - scheduled.dueAtMs) < 0) {
+                continue;
+            }
+
+            const rules::RuleRecord* record = ruleState_.rule(scheduled.ruleId);
+            if (record == nullptr || !record->enabled) {
+                scheduled = ScheduledRuleAction{};
+                continue;
+            }
+
+            switch (scheduled.action) {
+                case rules::ExecutableAction::UploadData:
+                    reportScheduler_.requestImmediateReport();
+                    ++ruleActionsExecuted_;
+                    break;
+                case rules::ExecutableAction::Reboot:
+                    rebootRequested_ = true;
+                    ++ruleActionsExecuted_;
+                    break;
+                case rules::ExecutableAction::None:
+                case rules::ExecutableAction::Unsupported:
+                    ++ruleUnsupportedActions_;
+                    break;
+            }
+            scheduled = ScheduledRuleAction{};
+        }
+    }
+
+    void processRuleExecution() {
+        const time_t unixNow = ::time(nullptr);
+
+        if (ruleBootEvaluationPending_) {
+            ruleBootEvaluationPending_ = false;
+            for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+                const rules::RuleRecord* record = ruleState_.rule(id);
+                if (record == nullptr || !record->enabled ||
+                    !rules::isDeviceRestartCondition(record->frames[0])) {
+                    continue;
+                }
+                scheduleRuleActions(id, *record);
+            }
+        }
+
+        if (unixNow > 0) {
+            const time::LocalDateTime local =
+                time::localDateTime(static_cast<uint32_t>(unixNow), timeSettings_);
+            const uint32_t minuteKey = rules::localMinuteKey(local);
+
+            for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+                const rules::RuleRecord* record = ruleState_.rule(id);
+                if (record == nullptr || !record->enabled) continue;
+                if (!rules::matchesTimeCondition(record->frames[0], local)) continue;
+
+                const size_t index = static_cast<size_t>(id - 1U);
+                if (lastRuleMinuteKey_[index] == minuteKey) continue;
+                lastRuleMinuteKey_[index] = minuteKey;
+                scheduleRuleActions(id, *record);
+            }
+        }
+
+        executeDueRuleActions();
+    }
+
     bool processRuleReply() {
         if (ruleReplyCursor_ >= ruleReplyCount_ || !lora_.connected()) return false;
 
@@ -737,6 +845,7 @@ private:
         }
         if (!ruleStore_.saveRule(command.ruleId, updated)) return false;
         *current = updated;
+        if (!updated.enabled) cancelScheduledRuleActions(command.ruleId);
         return stageRuleConfigurationAck(command, 0x00);
     }
 
@@ -769,6 +878,9 @@ private:
                 return false;
             }
             *current = updated;
+            if (!updated.enabled) {
+                cancelScheduledRuleActions(static_cast<uint8_t>(bit + 1U));
+            }
         }
         return true;
     }
@@ -1471,6 +1583,8 @@ private:
     rules::StoredFrame ruleReplyFrames_[rules::kRuleFrameSlots];
     size_t ruleReplyCount_ = 0;
     size_t ruleReplyCursor_ = 0;
+    ScheduledRuleAction scheduledRuleActions_[rules::kRuleCount * 3U];
+    uint32_t lastRuleMinuteKey_[rules::kRuleCount] = {0};
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
     SecurityStore security_;
     BoardService board_;
@@ -1507,6 +1621,9 @@ private:
     uint32_t historyQuerySendFailures_ = 0;
     uint32_t ruleReplyPacketsSent_ = 0;
     uint32_t ruleReplySendFailures_ = 0;
+    uint32_t ruleTriggers_ = 0;
+    uint32_t ruleActionsExecuted_ = 0;
+    uint32_t ruleUnsupportedActions_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
@@ -1515,6 +1632,7 @@ private:
     bool compatibilityWasConnected_ = false;
     bool compatibilityBasicInfoPending_ = false;
     bool compatibilityResetEventPending_ = true;
+    bool ruleBootEvaluationPending_ = false;
     bool rebootRequested_ = false;
 };
 
