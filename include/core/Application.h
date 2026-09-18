@@ -204,7 +204,7 @@ public:
         if (network_.apActive()) capabilities_.add("network.ap");
         if (network_.clientConnected()) capabilities_.add("network.client");
 
-        if (!web_.begin(config_, configStore_, security_, network_)) {
+        if (!web_.begin(config_, configStore_, security_, network_, events_)) {
             Serial.println("Failed to initialize Web UI.");
             return false;
         }
