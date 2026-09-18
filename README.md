@@ -140,6 +140,7 @@ The Core exposes board resources independently of protocol components:
 - `docs/specification.md` - product requirements
 - `docs/architecture.md` - source, channel, transport and component architecture
 - `docs/lorawan-protocol.md` - LoRaWAN compatibility, identity and extensions
+- `docs/uc100-compatibility.md` - UC100 V2 command-by-command implementation status
 - `docs/hardware.md` - hardware and electrical interfaces
 - `docs/rule-engine.md` - automation model
 - `docs/web-ui.md` - Wi-Fi, Web UI and OLED interaction
