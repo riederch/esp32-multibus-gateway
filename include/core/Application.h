@@ -1055,6 +1055,21 @@ private:
             return false;
         }
 
+        if (rules::validServerMessage(payload, length)) {
+            bool matched = false;
+            for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+                const rules::RuleRecord* record = ruleState_.rule(id);
+                if (record == nullptr || !record->enabled) continue;
+                if (!rules::matchesServerMessageCondition(record->frames[0], payload, length)) continue;
+                scheduleRuleActions(id, *record);
+                matched = true;
+            }
+            if (matched) {
+                ++ruleServerMessagesMatched_;
+                return true;
+            }
+        }
+
         std::vector<ParsedCommand> commands;
         size_t offset = 0;
         while (offset < length) {
@@ -1668,6 +1683,7 @@ private:
     uint32_t ruleActionSendFailures_ = 0;
     uint32_t ruleRawRs485Completions_ = 0;
     uint32_t ruleRawRs485Failures_ = 0;
+    uint32_t ruleServerMessagesMatched_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
