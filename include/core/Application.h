@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <time.h>
 #include <vector>
 #include "AppConfig.h"
 #include "CapabilityRegistry.h"
@@ -14,6 +15,8 @@
 #include "lorawan/FPort85Codec.h"
 #include "history/HistorySettings.h"
 #include "history/HistorySettingsStore.h"
+#include "history/PersistentHistoryStore.h"
+#include "lorawan/FPort85History.h"
 #include "lorawan/FPort85ReportScheduler.h"
 #include "lorawan/FPort85ReportSettingsStore.h"
 #include "modbus/ModbusChannelStore.h"
@@ -56,6 +59,10 @@ public:
         }
         if (!historySettingsStore_.begin()) {
             Serial.println("Failed to open history settings store.");
+            return false;
+        }
+        if (!historyStore_.begin()) {
+            Serial.println("Failed to open persistent history store.");
             return false;
         }
 
@@ -122,6 +129,10 @@ public:
             Serial.println("Failed to load persisted history settings.");
             return false;
         }
+        if (!historyStore_.load(historyRing_)) {
+            Serial.println("Failed to load persistent history.");
+            return false;
+        }
         if (!loadModbusChannels()) {
             Serial.println("Failed to load persisted Modbus channels.");
             return false;
@@ -162,6 +173,7 @@ public:
         lora_.loop();
         modbus_.loop();
         captureModbusCompatibilitySample();
+        processHistoryStorage();
         processModbusCompatibilityReport();
         gnss_.loop();
         if (rebootRequested_) {
@@ -210,6 +222,14 @@ private:
         lorawan::Rs485SettingsEnquiryCommand rs485SettingsEnquiry;
     };
 
+    struct HistorySample {
+        bool present = false;
+        modbus::ChannelConfig channel;
+        bool success = false;
+        uint8_t valueCount = 0;
+        modbus::DecodedScalar values[2];
+    };
+
     static void factoryResetThunk(void* context) {
         if (context != nullptr) static_cast<Application*>(context)->clearSubsystemStores();
     }
@@ -221,6 +241,7 @@ private:
         reportSettingsStore_.clear();
         timeSettingsStore_.clear();
         historySettingsStore_.clear();
+        historyStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {
@@ -231,11 +252,73 @@ private:
     void captureModbusCompatibilitySample() {
         ModbusComponent::PollCompletion completion;
         if (!modbus_.takeCompletedPoll(completion)) return;
+
         reportScheduler_.recordPoll(
             completion.channel,
             completion.success,
             completion.values,
             completion.valueCount);
+
+        if (completion.channel.slot < modbus::kCompatibilitySlotCount) {
+            HistorySample& sample = historySamples_[completion.channel.slot];
+            sample.present = true;
+            sample.channel = completion.channel;
+            sample.success = completion.success;
+            sample.valueCount = completion.success ? completion.valueCount : 0;
+            if (completion.success && completion.valueCount > 0) {
+                sample.values[0] = completion.values[0];
+                if (completion.valueCount > 1) sample.values[1] = completion.values[1];
+            }
+        }
+    }
+
+    void processHistoryStorage() {
+        if (!historySettings_.storageEnabled) return;
+
+        const uint32_t now = millis();
+        if (static_cast<int32_t>(now - nextHistorySnapshotAtMs_) < 0) return;
+        nextHistorySnapshotAtMs_ = now + static_cast<uint32_t>(reportScheduler_.settings().seconds) * 1000UL;
+
+        const time_t unixNow = ::time(nullptr);
+        if (unixNow <= 0) {
+            ++historySnapshotsSkippedNoTime_;
+            return;
+        }
+
+        history::PersistentHistoryStore::Ring updated = historyRing_;
+        bool added = false;
+        for (uint8_t slot = 0; slot < modbus::kCompatibilitySlotCount; ++slot) {
+            const HistorySample& sample = historySamples_[slot];
+            if (!sample.present) continue;
+
+            lorawan::HistoricalRecord record;
+            size_t written = 0;
+            if (lorawan::FPort85History::encodeModbusRecord(
+                    static_cast<uint32_t>(unixNow),
+                    sample.channel,
+                    sample.success,
+                    sample.success ? sample.values : nullptr,
+                    sample.valueCount,
+                    record.payload,
+                    sizeof(record.payload),
+                    written) != lorawan::EncodeStatus::Ok ||
+                written != lorawan::kHistoricalModbusRecordLength) {
+                ++historyEncodeFailures_;
+                continue;
+            }
+
+            updated.push(record);
+            added = true;
+        }
+
+        if (!added) return;
+        if (!historyStore_.save(updated)) {
+            ++historyPersistFailures_;
+            return;
+        }
+
+        historyRing_ = updated;
+        ++historySnapshotsStored_;
     }
 
     void processModbusCompatibilityReport() {
@@ -492,7 +575,13 @@ private:
 
         const lorawan::ReportIntervalSettings previous = reportScheduler_.settings();
         if (!reportSettingsStore_.save(command.settings)) return false;
-        if (reportScheduler_.applySettings(command.settings, millis())) return true;
+
+        const uint32_t now = millis();
+        if (reportScheduler_.applySettings(command.settings, now)) {
+            nextHistorySnapshotAtMs_ =
+                now + static_cast<uint32_t>(command.settings.seconds) * 1000UL;
+            return true;
+        }
 
         reportSettingsStore_.save(previous);
         return false;
@@ -626,7 +715,10 @@ private:
     bool loadReportSettings() {
         lorawan::ReportIntervalSettings settings;
         if (!reportSettingsStore_.load(settings)) return false;
-        reportScheduler_.begin(settings, millis());
+        const uint32_t now = millis();
+        reportScheduler_.begin(settings, now);
+        nextHistorySnapshotAtMs_ =
+            now + static_cast<uint32_t>(settings.seconds) * 1000UL;
         return true;
     }
 
@@ -698,10 +790,12 @@ private:
         Serial.printf("  DST: %s, bias=%u min\n",
                       timeSettings_.dst.enabled ? "enabled" : "disabled",
                       static_cast<unsigned>(timeSettings_.dst.biasMinutes));
-        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s\n",
+        Serial.printf("  History: storage=%s, retransmission=%s, interval=%u s, records=%u/%u\n",
                       historySettings_.storageEnabled ? "enabled" : "disabled",
                       historySettings_.retransmissionEnabled ? "enabled" : "disabled",
-                      static_cast<unsigned>(historySettings_.retransmissionIntervalSeconds));
+                      static_cast<unsigned>(historySettings_.retransmissionIntervalSeconds),
+                      static_cast<unsigned>(historyRing_.size()),
+                      static_cast<unsigned>(historyRing_.capacity()));
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
@@ -738,6 +832,9 @@ private:
     time::Settings timeSettings_;
     history::SettingsStore historySettingsStore_;
     history::Settings historySettings_;
+    history::PersistentHistoryStore historyStore_;
+    history::PersistentHistoryStore::Ring historyRing_;
+    HistorySample historySamples_[modbus::kCompatibilitySlotCount];
     SecurityStore security_;
     BoardService board_;
     NetworkService network_;
@@ -749,6 +846,11 @@ private:
     uint32_t compatibilityUplinksBuilt_ = 0;
     uint32_t compatibilityUplinkEncodeFailures_ = 0;
     uint32_t compatibilityUplinkSendFailures_ = 0;
+    uint32_t nextHistorySnapshotAtMs_ = 0;
+    uint32_t historySnapshotsStored_ = 0;
+    uint32_t historySnapshotsSkippedNoTime_ = 0;
+    uint32_t historyEncodeFailures_ = 0;
+    uint32_t historyPersistFailures_ = 0;
     bool rebootRequested_ = false;
 };
 
