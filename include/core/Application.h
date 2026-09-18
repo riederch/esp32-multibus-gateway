@@ -177,6 +177,7 @@ private:
         modbusChannelStore_.clear();
         rs485SettingsStore_.clear();
         modbusMasterSettingsStore_.clear();
+        reportSettingsStore_.clear();
     }
 
     static bool downlinkThunk(void* context, uint8_t fport, const uint8_t* payload, size_t length) {

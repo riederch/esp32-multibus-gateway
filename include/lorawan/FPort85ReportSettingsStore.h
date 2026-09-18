@@ -29,6 +29,10 @@ public:
         return prefs_.putUShort(kKey, settings.seconds) == sizeof(uint16_t);
     }
 
+    void clear() {
+        prefs_.remove(kKey);
+    }
+
 private:
     static constexpr const char* kKey = "lw_report_s";
     mutable Preferences prefs_;
