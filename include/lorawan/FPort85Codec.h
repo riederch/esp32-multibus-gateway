@@ -58,6 +58,14 @@ struct UtcTimezoneCommand {
 
 struct LnsTimeSyncCommand {};
 
+struct HistoryToggleCommand {
+    bool enabled = false;
+};
+
+struct RetransmissionIntervalCommand {
+    uint16_t seconds = 600;
+};
+
 struct DstSettingsCommand {
     bool enabled = false;
     uint8_t biasMinutes = 0;
@@ -105,6 +113,9 @@ public:
     static constexpr uint8_t kUtcTimezoneType = 0xBD;
     static constexpr uint8_t kLnsTimeSyncType = 0x4A;
     static constexpr uint8_t kDstSettingsType = 0x72;
+    static constexpr uint8_t kDataStorageType = 0x68;
+    static constexpr uint8_t kDataRetransmissionType = 0x69;
+    static constexpr uint8_t kRetransmissionIntervalType = 0x0D;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
@@ -127,6 +138,9 @@ public:
         if (header.channelId == kSystemChannel && header.type == kUtcTimezoneType) return true;
         if (header.channelId == kSystemChannel && header.type == kLnsTimeSyncType) return true;
         if (header.channelId == kModbusChannel && header.type == kDstSettingsType) return true;
+        if (header.channelId == kSystemChannel && header.type == kDataStorageType) return true;
+        if (header.channelId == kSystemChannel && header.type == kDataRetransmissionType) return true;
+        if (header.channelId == kModbusChannel && header.type == kRetransmissionIntervalType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
@@ -256,6 +270,48 @@ public:
         }
 
         consumed = 11;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeHistoryToggleCommand(const uint8_t* payload,
+                                                    size_t length,
+                                                    uint8_t expectedType,
+                                                    HistoryToggleCommand& command,
+                                                    size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kSystemChannel || payload[1] != expectedType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (expectedType != kDataStorageType && expectedType != kDataRetransmissionType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (payload[2] > 0x01U) return DecodeStatus::Invalid;
+
+        command = HistoryToggleCommand{};
+        command.enabled = payload[2] == 0x01U;
+        consumed = 3;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodeRetransmissionIntervalCommand(
+        const uint8_t* payload,
+        size_t length,
+        RetransmissionIntervalCommand& command,
+        size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 4) return DecodeStatus::Truncated;
+        if (payload[0] != kModbusChannel || payload[1] != kRetransmissionIntervalType) {
+            return DecodeStatus::Unsupported;
+        }
+
+        const uint16_t seconds = static_cast<uint16_t>(payload[2]) |
+                                 (static_cast<uint16_t>(payload[3]) << 8U);
+        if (seconds < 30 || seconds > 1200) return DecodeStatus::Invalid;
+
+        command = RetransmissionIntervalCommand{};
+        command.seconds = seconds;
+        consumed = 4;
         return DecodeStatus::Ok;
     }
 
