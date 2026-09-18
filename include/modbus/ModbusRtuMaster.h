@@ -25,6 +25,12 @@ enum class RtuTransactionResult : uint8_t {
     Failure,
 };
 
+enum class RtuTransactionKind : uint8_t {
+    None,
+    Read,
+    Write,
+};
+
 inline bool makeRtuSerialConfig(const Rs485SerialSettings& settings,
                                 RtuSerialConfig& config,
                                 uint32_t responseTimeoutMs = 500) {
@@ -93,6 +99,7 @@ public:
     bool started() const { return started_; }
     bool online() const { return online_; }
     bool transactionPending() const { return transactionActive_; }
+    RtuTransactionKind transactionKind() const { return transactionKind_; }
     uint32_t successfulTransactions() const { return successfulTransactions_; }
     uint32_t failedTransactions() const { return failedTransactions_; }
     RtuDecodeStatus lastStatus() const { return lastStatus_; }
@@ -130,9 +137,52 @@ public:
         if (sent != requestLength) return fail(RtuDecodeStatus::Truncated);
 
         activeChannel_ = channel;
+        activeValueIndex_ = 0;
+        activeRequestLength_ = requestLength;
+        memcpy(activeRequest_, request, requestLength);
         responseLength_ = 0;
         expectedResponseLength_ = 0;
         transactionStartedAtMs_ = millis();
+        transactionKind_ = RtuTransactionKind::Read;
+        transactionActive_ = true;
+        return true;
+    }
+
+    bool startWrite(const ChannelConfig& channel,
+                    uint8_t valueIndex,
+                    const DecodedScalar& value) {
+        lastExceptionCode_ = 0;
+        if (!started_ || transactionActive_ || !validChannelConfig(channel)) {
+            if (!transactionActive_) fail(RtuDecodeStatus::InvalidConfig);
+            return false;
+        }
+
+        uint8_t request[17] = {0};
+        size_t requestLength = 0;
+        const RtuDecodeStatus requestStatus = ModbusRtuCodec::buildWriteRequest(
+            channel, valueIndex, value, request, sizeof(request), requestLength);
+        if (requestStatus != RtuDecodeStatus::Ok) return fail(requestStatus);
+
+        drainReceiveBuffer();
+        waitInterFrameGap();
+
+        digitalWrite(board::MODBUS_DIR, HIGH);
+        delayMicroseconds(txEnableGuardUs());
+        const size_t sent = serial_.write(request, requestLength);
+        serial_.flush();
+        delayMicroseconds(txDisableGuardUs());
+        digitalWrite(board::MODBUS_DIR, LOW);
+
+        if (sent != requestLength) return fail(RtuDecodeStatus::Truncated);
+
+        activeChannel_ = channel;
+        activeValueIndex_ = valueIndex;
+        activeRequestLength_ = requestLength;
+        memcpy(activeRequest_, request, requestLength);
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        transactionStartedAtMs_ = millis();
+        transactionKind_ = RtuTransactionKind::Write;
         transactionActive_ = true;
         return true;
     }
@@ -140,6 +190,7 @@ public:
     RtuTransactionResult pollRead(DecodedScalar values[2], uint8_t& valueCount) {
         valueCount = 0;
         if (!transactionActive_) return RtuTransactionResult::Idle;
+        if (transactionKind_ != RtuTransactionKind::Read) return RtuTransactionResult::Failure;
         if (values == nullptr) {
             finishFailure(RtuDecodeStatus::InvalidConfig);
             return RtuTransactionResult::Failure;
@@ -180,8 +231,42 @@ public:
         return RtuTransactionResult::Pending;
     }
 
+    RtuTransactionResult pollWrite() {
+        if (!transactionActive_) return RtuTransactionResult::Idle;
+        if (transactionKind_ != RtuTransactionKind::Write) return RtuTransactionResult::Failure;
+
+        while (serial_.available() > 0) {
+            const int raw = serial_.read();
+            if (raw < 0) break;
+            if (responseLength_ >= sizeof(response_)) {
+                finishFailure(RtuDecodeStatus::BufferTooSmall);
+                return RtuTransactionResult::Failure;
+            }
+
+            response_[responseLength_++] = static_cast<uint8_t>(raw);
+            if (responseLength_ == 2) {
+                expectedResponseLength_ = (response_[1] & 0x80U) != 0 ? 5U : 8U;
+            }
+
+            if (expectedResponseLength_ != 0 && responseLength_ >= expectedResponseLength_) {
+                return finishWriteDecode();
+            }
+        }
+
+        if (millis() - transactionStartedAtMs_ >= config_.responseTimeoutMs) {
+            if (responseLength_ == 0) {
+                finishFailure(RtuDecodeStatus::Truncated);
+                return RtuTransactionResult::Failure;
+            }
+            return finishWriteDecode();
+        }
+
+        return RtuTransactionResult::Pending;
+    }
+
     void cancelTransaction() {
         transactionActive_ = false;
+        transactionKind_ = RtuTransactionKind::None;
         responseLength_ = 0;
         expectedResponseLength_ = 0;
         digitalWrite(board::MODBUS_DIR, LOW);
@@ -205,6 +290,33 @@ public:
     }
 
 private:
+    RtuTransactionResult finishWriteDecode() {
+        uint8_t exceptionCode = 0;
+        const RtuDecodeStatus status = ModbusRtuCodec::decodeWriteResponse(
+            activeChannel_,
+            activeValueIndex_,
+            activeRequest_,
+            activeRequestLength_,
+            response_,
+            responseLength_,
+            exceptionCode);
+        lastExceptionCode_ = exceptionCode;
+        transactionActive_ = false;
+        transactionKind_ = RtuTransactionKind::None;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+
+        if (status != RtuDecodeStatus::Ok) {
+            fail(status);
+            return RtuTransactionResult::Failure;
+        }
+
+        lastStatus_ = RtuDecodeStatus::Ok;
+        online_ = true;
+        ++successfulTransactions_;
+        return RtuTransactionResult::Success;
+    }
+
     RtuTransactionResult finishDecode(DecodedScalar values[2], uint8_t& valueCount) {
         uint8_t exceptionCode = 0;
         const RtuDecodeStatus status = ModbusRtuCodec::decodeReadResponse(
@@ -216,6 +328,7 @@ private:
             exceptionCode);
         lastExceptionCode_ = exceptionCode;
         transactionActive_ = false;
+        transactionKind_ = RtuTransactionKind::None;
         responseLength_ = 0;
         expectedResponseLength_ = 0;
 
@@ -232,6 +345,7 @@ private:
 
     void finishFailure(RtuDecodeStatus status) {
         transactionActive_ = false;
+        transactionKind_ = RtuTransactionKind::None;
         responseLength_ = 0;
         expectedResponseLength_ = 0;
         fail(status);
@@ -275,11 +389,15 @@ private:
     HardwareSerial serial_;
     RtuSerialConfig config_;
     ChannelConfig activeChannel_;
+    uint8_t activeValueIndex_ = 0;
+    uint8_t activeRequest_[17] = {0};
+    size_t activeRequestLength_ = 0;
     uint8_t response_[32] = {0};
     size_t responseLength_ = 0;
     size_t expectedResponseLength_ = 0;
     uint32_t transactionStartedAtMs_ = 0;
     bool transactionActive_ = false;
+    RtuTransactionKind transactionKind_ = RtuTransactionKind::None;
     bool started_ = false;
     bool online_ = false;
     uint32_t successfulTransactions_ = 0;
