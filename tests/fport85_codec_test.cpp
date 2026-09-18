@@ -11,6 +11,9 @@ using multibus::lorawan::DstSettingsCommand;
 using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::HistoryToggleCommand;
+using multibus::lorawan::RetrievabilityIntervalCommand;
+using multibus::lorawan::HistoryQueryKind;
+using multibus::lorawan::HistoryQueryCommand;
 using multibus::lorawan::RetransmissionIntervalCommand;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
@@ -445,7 +448,63 @@ static void testRetransmissionIntervalRange() {
     }
 }
 
+static void testHistoryPointQuery() {
+    const uint8_t payload[] = {0xfd, 0x6b, 0x0d, 0x75, 0x5b, 0x63};
+    HistoryQueryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryQueryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.kind == HistoryQueryKind::TimePoint);
+    assert(command.startUnix == 1666938125U);
+    assert(consumed == sizeof(payload));
+}
+
+static void testHistoryRangeQuery() {
+    const uint8_t payload[] = {
+        0xfd, 0x6c,
+        0x00, 0x10, 0x00, 0x00,
+        0x00, 0x20, 0x00, 0x00
+    };
+    HistoryQueryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryQueryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.kind == HistoryQueryKind::TimeRange);
+    assert(command.startUnix == 0x1000U);
+    assert(command.endUnix == 0x2000U);
+}
+
+static void testHistoryStopQuery() {
+    const uint8_t payload[] = {0xfd, 0x6d, 0xff};
+    HistoryQueryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeHistoryQueryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.kind == HistoryQueryKind::Stop);
+}
+
+static void testRetrievabilityIntervalAndReply() {
+    const uint8_t payload[] = {0xf9, 0x0e, 0x3c, 0x00};
+    RetrievabilityIntervalCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeRetrievabilityIntervalCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(command.seconds == 60);
+
+    uint8_t reply[3] = {0};
+    size_t written = 0;
+    assert(FPort85Codec::encodeHistoryQueryReply(
+        FPort85Codec::kHistoryPointType, 0, reply, sizeof(reply), written) == EncodeStatus::Ok);
+    const uint8_t expected[] = {0xfc, 0x6b, 0x00};
+    assert(written == sizeof(expected));
+    assert(memcmp(reply, expected, sizeof(expected)) == 0);
+}
+
 int main() {
+    testHistoryPointQuery();
+    testHistoryRangeQuery();
+    testHistoryStopQuery();
+    testRetrievabilityIntervalAndReply();
     testDataStorageEnableVector();
     testDataRetransmissionDisableVector();
     testHistoryToggleRejectsInvalidValue();
