@@ -6,6 +6,7 @@
 #include <esp_system.h>
 #include <initializer_list>
 #include "core/BackupService.h"
+#include "core/BackupCrypto.h"
 #include "core/ConfigStore.h"
 #include "core/DeviceConfig.h"
 #include "core/EventBus.h"
@@ -28,8 +29,8 @@ public:
         network_ = &network;
         events_ = &events;
 
-        const char* headers[] = {"Cookie", "X-CSRF-Token"};
-        server_.collectHeaders(headers, 2);
+        const char* headers[] = {"Cookie", "X-CSRF-Token", "X-Backup-Passphrase"};
+        server_.collectHeaders(headers, 3);
 
         server_.on("/", HTTP_GET, [this]() { handleRoot(); });
         server_.on("/login", HTTP_POST, [this]() { handleLogin(); });
@@ -41,7 +42,7 @@ public:
         server_.on("/api/config/components", HTTP_POST, [this]() { handleComponentConfig(); });
         server_.on("/api/config/network", HTTP_POST, [this]() { handleNetworkConfig(); });
         server_.on("/api/config/mqtt", HTTP_POST, [this]() { handleMqttConfig(); });
-        server_.on("/api/system/backup", HTTP_GET, [this]() { handleBackupDownload(); });
+        server_.on("/api/system/backup", HTTP_POST, [this]() { handleBackupDownload(); });
         server_.on("/api/system/restore", HTTP_POST, [this]() { handleBackupRestore(); });
         server_.on("/api/reboot", HTTP_POST, [this]() { handleReboot(); });
         server_.onNotFound([this]() { handleNotFound(); });
@@ -208,9 +209,13 @@ private:
                 "<div id='eventNotice'></div><pre id='eventList'>Loading...</pre></fieldset>";
 
         html += "<fieldset><legend>Backup / Restore</legend>"
-                "<p class='warning'>Current backup files contain configuration secrets in clear text. Store them securely.</p>"
-                "<p><a href='/api/system/backup'>Download configuration backup</a></p>"
+                "<p>New backups are encrypted with a passphrase using AES-256-GCM.</p>"
+                "<label>Backup passphrase <input id='backupPassphrase' type='password' minlength='12'></label>"
+                "<label>Repeat passphrase <input id='backupPassphrase2' type='password' minlength='12'></label>"
+                "<button type='button' onclick='downloadBackup()'>Download encrypted backup</button>"
+                "<hr>"
                 "<label>Restore backup <input id='restoreFile' type='file' accept='application/json,.json'></label>"
+                "<label>Restore passphrase <input id='restorePassphrase' type='password' minlength='12'></label>"
                 "<button type='button' onclick='restoreBackup()'>Upload and restore</button>"
                 "<pre id='restoreStatus'></pre></fieldset>";
 
@@ -234,9 +239,20 @@ private:
                 "}if(eventLines.length>32)eventLines=eventLines.slice(-32);"
                 "document.getElementById('eventList').textContent=eventLines.length?eventLines.join('\\n'):'No events';"
                 "}catch(e){document.getElementById('eventNotice').textContent='Event API unavailable';}}"
+                "async function downloadBackup(){"
+                "const p=document.getElementById('backupPassphrase').value,p2=document.getElementById('backupPassphrase2').value;"
+                "const s=document.getElementById('restoreStatus');"
+                "if(p.length<12){s.textContent='Backup passphrase must contain at least 12 characters.';return;}"
+                "if(p!==p2){s.textContent='Backup passphrases do not match.';return;}"
+                "s.textContent='Encrypting backup...';"
+                "const r=await fetch('/api/system/backup',{method:'POST',headers:{'X-CSRF-Token':csrfToken,'X-Backup-Passphrase':p}});"
+                "if(!r.ok){s.textContent=await r.text();return;}"
+                "const b=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='multibus-backup-encrypted.json';a.click();URL.revokeObjectURL(a.href);"
+                "s.textContent='Encrypted backup created.';}"
                 "async function restoreBackup(){const f=document.getElementById('restoreFile').files[0];"
-                "if(!f)return;const s=document.getElementById('restoreStatus');s.textContent='Uploading...';"
-                "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:await f.text()});"
+                "if(!f)return;const p=document.getElementById('restorePassphrase').value;"
+                "const s=document.getElementById('restoreStatus');s.textContent='Uploading...';"
+                "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken,'X-Backup-Passphrase':p},body:await f.text()});"
                 "s.textContent=await r.text();}"
                 "loadEvents();setInterval(loadEvents,5000);"
                 "</script></body></html>";
@@ -501,15 +517,32 @@ private:
     }
 
     void handleBackupDownload() {
-        if (!requireAuth()) return;
-        String backup;
-        if (!backupService_.exportConfig(*config_, backup)) {
+        if (!requireCsrf()) return;
+
+        const String passphrase = server_.header("X-Backup-Passphrase");
+        if (passphrase.length() < BackupCrypto::kMinimumPassphraseLength) {
+            server_.send(400, "text/plain", "Backup passphrase must contain at least 12 characters");
+            return;
+        }
+
+        String plaintext;
+        if (!backupService_.exportConfig(*config_, plaintext)) {
             server_.send(500, "text/plain", "Failed to generate backup");
             return;
         }
-        server_.sendHeader("Content-Disposition", "attachment; filename=multibus-backup.json");
+
+        String encrypted;
+        String error;
+        if (!BackupCrypto::encrypt(plaintext, passphrase, encrypted, error)) {
+            plaintext = "";
+            server_.send(500, "text/plain", "Failed to encrypt backup: " + error);
+            return;
+        }
+        plaintext = "";
+
+        server_.sendHeader("Content-Disposition", "attachment; filename=multibus-backup-encrypted.json");
         server_.sendHeader("Cache-Control", "no-store");
-        server_.send(200, "application/json", backup);
+        server_.send(200, "application/json", encrypted);
     }
 
     void handleBackupRestore() {
@@ -520,12 +553,23 @@ private:
             return;
         }
 
-        DeviceConfig restored;
+        String plaintext = body;
         String error;
-        if (!backupService_.importConfig(body, restored, error)) {
+        if (BackupCrypto::isEncryptedEnvelope(body)) {
+            const String passphrase = server_.header("X-Backup-Passphrase");
+            if (!BackupCrypto::decrypt(body, passphrase, plaintext, error)) {
+                server_.send(400, "text/plain", "Encrypted backup rejected: " + error);
+                return;
+            }
+        }
+
+        DeviceConfig restored;
+        if (!backupService_.importConfig(plaintext, restored, error)) {
+            plaintext = "";
             server_.send(400, "text/plain", "Backup rejected: " + error);
             return;
         }
+        plaintext = "";
 
         if (!configStore_->save(restored)) {
             server_.send(500, "text/plain", "Validated backup could not be persisted");
