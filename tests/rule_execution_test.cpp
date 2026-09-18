@@ -11,6 +11,7 @@ using multibus::rules::decodeExecutableAction;
 using multibus::rules::isDeviceRestartCondition;
 using multibus::rules::matchesTimeCondition;
 using multibus::rules::matchesServerMessageCondition;
+using multibus::rules::matchesRs485MessageCondition;
 using multibus::rules::ChannelConditionPlan;
 using multibus::rules::ChannelConditionRuntime;
 using multibus::rules::decodeChannelCondition;
@@ -241,7 +242,20 @@ static void testChangeRecentCondition() {
     assert(evaluateChannelCondition(plan, value, 300, runtime));
 }
 
+static void testRs485MessageCondition() {
+    const uint8_t conditionData[] = {
+        0xf9, 0x7d, 0x81, 0x13,
+        0x04, 0x01, 0x03, 0x00, 0x01
+    };
+    const StoredFrame condition = frame(conditionData, sizeof(conditionData));
+    const uint8_t matching[] = {0x01, 0x03, 0x00, 0x01};
+    const uint8_t other[] = {0x01, 0x03, 0x00, 0x02};
+    assert(matchesRs485MessageCondition(condition, matching, sizeof(matching)));
+    assert(!matchesRs485MessageCondition(condition, other, sizeof(other)));
+}
+
 int main() {
+    testRs485MessageCondition();
     testDocumentedAboveChannelCondition();
     testBooleanImmediateCondition();
     testChangeRecentCondition();
