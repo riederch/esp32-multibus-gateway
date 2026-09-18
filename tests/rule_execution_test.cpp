@@ -10,6 +10,8 @@ using multibus::rules::StoredFrame;
 using multibus::rules::decodeExecutableAction;
 using multibus::rules::isDeviceRestartCondition;
 using multibus::rules::matchesTimeCondition;
+using multibus::rules::matchesServerMessageCondition;
+using multibus::rules::validServerMessage;
 using multibus::time::DstSettings;
 using multibus::time::LocalDateTime;
 using multibus::time::Settings;
@@ -73,6 +75,17 @@ static void testActions() {
     assert(uploadPlan.action == ExecutableAction::UploadData);
     assert(uploadPlan.delayMs == 1000);
 
+    const uint8_t message[] = {
+        0xf9, 0x7d, 0x81, 0x91,
+        0xfa, 0x00, 0x00, 0x00,
+        0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f
+    };
+    const ActionPlan messagePlan = decodeExecutableAction(frame(message, sizeof(message)));
+    assert(messagePlan.action == ExecutableAction::ServerMessage);
+    assert(messagePlan.delayMs == 250);
+    assert(messagePlan.payloadLength == 5);
+    assert(memcmp(messagePlan.payload, "hello", 5) == 0);
+
     const uint8_t raw[] = {
         0xf9, 0x7d, 0x81, 0x93,
         0xf4, 0x01, 0x00, 0x00,
@@ -118,7 +131,24 @@ static void testViennaStyleDstConversion() {
     assert(winter.hour == 13);
 }
 
+static void testServerMessageCondition() {
+    const uint8_t conditionData[] = {
+        0xf9, 0x7d, 0x81, 0x14,
+        0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f
+    };
+    const StoredFrame condition = frame(conditionData, sizeof(conditionData));
+    const uint8_t hello[] = {'h','e','l','l','o'};
+    const uint8_t other[] = {'h','e','l','l','!'};
+    assert(validServerMessage(hello, sizeof(hello)));
+    assert(matchesServerMessageCondition(condition, hello, sizeof(hello)));
+    assert(!matchesServerMessageCondition(condition, other, sizeof(other)));
+
+    const uint8_t binary[] = {0xff, 0x10, 0xff};
+    assert(!validServerMessage(binary, sizeof(binary)));
+}
+
 int main() {
+    testServerMessageCondition();
     testWeeklyTimeCondition();
     testMonthlyTimeCondition();
     testRestartCondition();

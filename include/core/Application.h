@@ -699,7 +699,8 @@ private:
             scheduled.dueAtMs = millis() + plan.delayMs;
             scheduled.ruleId = ruleId;
             scheduled.actionSlot = actionIndex;
-            if (plan.action == rules::ExecutableAction::RawRs485) {
+            if (plan.action == rules::ExecutableAction::RawRs485 ||
+                plan.action == rules::ExecutableAction::ServerMessage) {
                 if (plan.payload == nullptr || plan.payloadLength < 2 ||
                     plan.payloadLength > sizeof(scheduled.payload)) {
                     scheduled = ScheduledRuleAction{};
@@ -728,6 +729,19 @@ private:
             }
 
             switch (scheduled.action) {
+                case rules::ExecutableAction::ServerMessage: {
+                    TransportEnvelope envelope;
+                    envelope.endpoint = lorawan::kCompatibilityFPort;
+                    envelope.payload = scheduled.payload;
+                    envelope.length = scheduled.payloadLength;
+                    envelope.confirmed = false;
+                    if (lora_.send(envelope)) {
+                        ++ruleActionsExecuted_;
+                    } else {
+                        ++ruleActionSendFailures_;
+                    }
+                    break;
+                }
                 case rules::ExecutableAction::UploadData:
                     reportScheduler_.requestImmediateReport();
                     ++ruleActionsExecuted_;
@@ -1039,6 +1053,21 @@ private:
                 return modbus_.queueRawRequest(payload, length);
             }
             return false;
+        }
+
+        if (rules::validServerMessage(payload, length)) {
+            bool matched = false;
+            for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+                const rules::RuleRecord* record = ruleState_.rule(id);
+                if (record == nullptr || !record->enabled) continue;
+                if (!rules::matchesServerMessageCondition(record->frames[0], payload, length)) continue;
+                scheduleRuleActions(id, *record);
+                matched = true;
+            }
+            if (matched) {
+                ++ruleServerMessagesMatched_;
+                return true;
+            }
         }
 
         std::vector<ParsedCommand> commands;
@@ -1651,8 +1680,10 @@ private:
     uint32_t ruleActionsExecuted_ = 0;
     uint32_t ruleUnsupportedActions_ = 0;
     uint32_t ruleActionQueueFailures_ = 0;
+    uint32_t ruleActionSendFailures_ = 0;
     uint32_t ruleRawRs485Completions_ = 0;
     uint32_t ruleRawRs485Failures_ = 0;
+    uint32_t ruleServerMessagesMatched_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;
