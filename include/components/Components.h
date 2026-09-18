@@ -39,7 +39,44 @@ public:
     size_t pointCount() const override { return 0; }
     bool describePoint(size_t, DataPointDescriptor&) const override { return false; }
     bool readPoint(const String&, DataValue&) override { return false; }
-    bool writePoint(const String&, const DataValue&) override { return false; }
+    bool writePoint(const String& pointId, const DataValue& value) override {
+        if (mode_ != ModbusMode::Master || !active_ || !value.valid ||
+            pendingWrite_.queued || writeInFlight_) {
+            return false;
+        }
+
+        uint8_t slot = 0;
+        uint8_t registerIndex = 0;
+        if (!parsePointId(pointId, slot, registerIndex)) return false;
+
+        const modbus::ChannelConfig* channel = channelForSlot(slot);
+        if (channel == nullptr || registerIndex >= channel->quantity ||
+            !modbus::ModbusRtuCodec::writableType(channel->dataType)) {
+            return false;
+        }
+
+        modbus::DecodedScalar scalar;
+        if (!dataValueToScalar(*channel, value, scalar)) return false;
+
+        // Validate the full request before accepting it into the asynchronous queue.
+        uint8_t request[17] = {0};
+        size_t written = 0;
+        if (modbus::ModbusRtuCodec::buildWriteRequest(
+                *channel, registerIndex, scalar, request, sizeof(request), written) !=
+                modbus::RtuDecodeStatus::Ok) {
+            return false;
+        }
+
+        pendingWrite_ = PendingWrite{};
+        pendingWrite_.queued = true;
+        pendingWrite_.channel = *channel;
+        pendingWrite_.registerIndex = registerIndex;
+        pendingWrite_.value = scalar;
+        return true;
+    }
+
+    uint32_t successfulWrites() const { return successfulWrites_; }
+    uint32_t failedWrites() const { return failedWrites_; }
 
 private:
     VictronMode mode_ = VictronMode::Disabled;
@@ -141,6 +178,7 @@ public:
         rs485Settings_ = settings;
         serialConfig_ = config;
         pollRetryCount_ = 0;
+        clearPendingWrite();
         nextPollAtMs_ = millis();
         return true;
     }
@@ -162,6 +200,7 @@ public:
         masterSettings_ = settings;
         serialConfig_ = config;
         pollRetryCount_ = 0;
+        clearPendingWrite();
         nextPollAtMs_ = millis();
         return true;
     }
@@ -205,6 +244,7 @@ public:
             rtuMaster_.cancelTransaction();
             pollRetryCount_ = 0;
         }
+        clearPendingWrite();
         cache_[config.slot] = PollCache{};
         for (auto& current : channels_) {
             if (current.slot == config.slot) {
@@ -221,6 +261,7 @@ public:
             rtuMaster_.cancelTransaction();
             pollRetryCount_ = 0;
         }
+        clearPendingWrite();
         for (auto it = channels_.begin(); it != channels_.end(); ++it) {
             if (it->slot == slot) {
                 channels_.erase(it);
@@ -266,9 +307,26 @@ public:
     }
 
     void loop() override {
-        if (mode_ != ModbusMode::Master || !active_ || channels_.empty()) return;
+        if (mode_ != ModbusMode::Master || !active_) return;
 
         if (rtuMaster_.transactionPending()) {
+            if (rtuMaster_.transactionKind() == modbus::RtuTransactionKind::Write) {
+                const modbus::RtuTransactionResult result = rtuMaster_.pollWrite();
+                if (result == modbus::RtuTransactionResult::Pending) return;
+
+                if (writeInFlight_) {
+                    if (result == modbus::RtuTransactionResult::Success) {
+                        applySuccessfulWriteToCache(activeWrite_);
+                        ++successfulWrites_;
+                    } else {
+                        ++failedWrites_;
+                    }
+                    writeInFlight_ = false;
+                }
+                nextPollAtMs_ = millis();
+                return;
+            }
+
             modbus::DecodedScalar values[2];
             uint8_t valueCount = 0;
             const modbus::RtuTransactionResult result = rtuMaster_.pollRead(values, valueCount);
@@ -280,6 +338,7 @@ public:
                 return;
             }
 
+            if (channels_.empty()) return;
             if (pollChannelIndex_ >= channels_.size()) pollChannelIndex_ = 0;
             const modbus::ChannelConfig channel = channels_[pollChannelIndex_];
             finishPollAttempt(
@@ -290,6 +349,24 @@ public:
             nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
             return;
         }
+
+        if (pendingWrite_.queued) {
+            activeWrite_ = pendingWrite_;
+            pendingWrite_.queued = false;
+            if (!rtuMaster_.startWrite(
+                    activeWrite_.channel,
+                    activeWrite_.registerIndex,
+                    activeWrite_.value)) {
+                ++failedWrites_;
+                writeInFlight_ = false;
+                nextPollAtMs_ = millis();
+                return;
+            }
+            writeInFlight_ = true;
+            return;
+        }
+
+        if (channels_.empty()) return;
 
         const uint32_t now = millis();
         if (static_cast<int32_t>(now - nextPollAtMs_) < 0) return;
@@ -329,7 +406,8 @@ public:
                 descriptor.id = pointIdForSlot(channel.slot, registerIndex);
                 descriptor.unit = "";
                 descriptor.readable = mode_ == ModbusMode::Master;
-                descriptor.writable = false;
+                descriptor.writable = mode_ == ModbusMode::Master &&
+                                      modbus::ModbusRtuCodec::writableType(channel.dataType);
 
                 if (modbus::isBooleanType(channel.dataType)) {
                     descriptor.type = DataType::Boolean;
@@ -398,6 +476,13 @@ public:
     const modbus::ModbusRtuMaster& rtuMaster() const { return rtuMaster_; }
 
 private:
+    struct PendingWrite {
+        bool queued = false;
+        modbus::ChannelConfig channel;
+        uint8_t registerIndex = 0;
+        modbus::DecodedScalar value;
+    };
+
     struct PollCache {
         bool valid = false;
         uint8_t valueCount = 0;
@@ -406,6 +491,64 @@ private:
         modbus::RtuDecodeStatus lastStatus = modbus::RtuDecodeStatus::Truncated;
         uint8_t lastExceptionCode = 0;
     };
+
+    void clearPendingWrite() {
+        pendingWrite_ = PendingWrite{};
+        activeWrite_ = PendingWrite{};
+        writeInFlight_ = false;
+    }
+
+    static bool dataValueToScalar(const modbus::ChannelConfig& channel,
+                                  const DataValue& input,
+                                  modbus::DecodedScalar& scalar) {
+        scalar = modbus::DecodedScalar{};
+
+        if (channel.dataType == modbus::WireDataType::Coil) {
+            if (input.type != DataType::Boolean) return false;
+            scalar.kind = modbus::ScalarKind::Boolean;
+            scalar.booleanValue = input.booleanValue;
+            return true;
+        }
+
+        if (modbus::isFloatingPointType(channel.dataType)) {
+            if (input.type != DataType::Float64) return false;
+            scalar.kind = modbus::ScalarKind::FloatingPoint;
+            scalar.floatingValue = input.floatValue;
+            return true;
+        }
+
+        if (modbus::uplinkSigned(channel)) {
+            if (input.type != DataType::Int64) return false;
+            scalar.kind = modbus::ScalarKind::SignedInteger;
+            scalar.signedValue = input.intValue;
+            return true;
+        }
+
+        if (input.type != DataType::UInt64) return false;
+        scalar.kind = modbus::ScalarKind::UnsignedInteger;
+        scalar.unsignedValue = input.uintValue;
+        return true;
+    }
+
+    void applySuccessfulWriteToCache(const PendingWrite& write) {
+        if (write.channel.slot >= modbus::kCompatibilitySlotCount ||
+            write.registerIndex >= 2) {
+            return;
+        }
+
+        PollCache& cached = cache_[write.channel.slot];
+        if (!cached.valid || cached.valueCount != write.channel.quantity) {
+            // A full readback will repopulate the cache on the normal poll path.
+            cached.valid = false;
+            cached.valueCount = 0;
+            return;
+        }
+
+        cached.values[write.registerIndex] = write.value;
+        cached.updatedAtMs = millis();
+        cached.lastStatus = modbus::RtuDecodeStatus::Ok;
+        cached.lastExceptionCode = 0;
+    }
 
     void finishPollAttempt(const modbus::ChannelConfig& channel,
                            bool success,
@@ -518,10 +661,15 @@ private:
     std::vector<modbus::ChannelConfig> channels_;
     PollCache cache_[modbus::kCompatibilitySlotCount];
     PollCompletion completedPoll_;
+    PendingWrite pendingWrite_;
+    PendingWrite activeWrite_;
     bool pollCompletionPending_ = false;
+    bool writeInFlight_ = false;
     size_t pollChannelIndex_ = 0;
     uint8_t pollRetryCount_ = 0;
     uint32_t nextPollAtMs_ = 0;
+    uint32_t successfulWrites_ = 0;
+    uint32_t failedWrites_ = 0;
 };
 
 class GnssComponent final : public Component, public DataSource {
