@@ -121,6 +121,13 @@ public:
         uint32_t completedAtMs = 0;
     };
 
+    struct RawCompletion {
+        bool success = false;
+        uint8_t payload[242] = {0};
+        size_t length = 0;
+        uint32_t completedAtMs = 0;
+    };
+
     void setMode(ModbusMode mode) {
         mode_ = mode;
         active_ = false;
@@ -273,6 +280,26 @@ public:
         if (mode_ != ModbusMode::Master || !active_) return;
 
         if (rtuMaster_.transactionPending()) {
+            if (rtuMaster_.transactionKind() == modbus::RtuTransactionKind::Raw) {
+                uint8_t response[242] = {0};
+                size_t responseLength = 0;
+                const modbus::RtuTransactionResult result =
+                    rtuMaster_.pollRaw(response, sizeof(response), responseLength);
+                if (result == modbus::RtuTransactionResult::Pending) return;
+
+                rawCompletion_ = RawCompletion{};
+                rawCompletion_.success = result == modbus::RtuTransactionResult::Success;
+                rawCompletion_.length = rawCompletion_.success ? responseLength : 0;
+                if (rawCompletion_.length > 0) {
+                    memcpy(rawCompletion_.payload, response, rawCompletion_.length);
+                }
+                rawCompletion_.completedAtMs = millis();
+                rawCompletionPending_ = true;
+                rawInFlight_ = false;
+                nextPollAtMs_ = millis();
+                return;
+            }
+
             if (rtuMaster_.transactionKind() == modbus::RtuTransactionKind::Write) {
                 const modbus::RtuTransactionResult result = rtuMaster_.pollWrite();
                 if (result == modbus::RtuTransactionResult::Pending) return;
@@ -313,6 +340,21 @@ public:
             return;
         }
 
+        if (pendingRaw_.queued) {
+            activeRaw_ = pendingRaw_;
+            pendingRaw_.queued = false;
+            if (!rtuMaster_.startRaw(activeRaw_.payload, activeRaw_.length)) {
+                rawCompletion_ = RawCompletion{};
+                rawCompletion_.success = false;
+                rawCompletion_.completedAtMs = millis();
+                rawCompletionPending_ = true;
+                rawInFlight_ = false;
+                return;
+            }
+            rawInFlight_ = true;
+            return;
+        }
+
         if (pendingWrite_.queued) {
             activeWrite_ = pendingWrite_;
             pendingWrite_.queued = false;
@@ -340,6 +382,28 @@ public:
             finishPollAttempt(channel, false, nullptr, 0);
             nextPollAtMs_ = millis() + masterSettings_.executionIntervalMs;
         }
+    }
+
+    bool queueRawRequest(const uint8_t* payload, size_t length) {
+        if (mode_ != ModbusMode::Master || !active_ ||
+            masterSettings_.passThroughMode != modbus::PassThroughMode::Active ||
+            payload == nullptr || length == 0 || length > sizeof(pendingRaw_.payload) ||
+            pendingRaw_.queued || rawInFlight_) {
+            return false;
+        }
+
+        pendingRaw_ = PendingRaw{};
+        pendingRaw_.queued = true;
+        pendingRaw_.length = length;
+        memcpy(pendingRaw_.payload, payload, length);
+        return true;
+    }
+
+    bool takeRawCompletion(RawCompletion& completion) {
+        if (!rawCompletionPending_) return false;
+        completion = rawCompletion_;
+        rawCompletionPending_ = false;
+        return true;
     }
 
     bool takeCompletedPoll(PollCompletion& completion) {
@@ -478,6 +542,12 @@ public:
     const modbus::ModbusRtuMaster& rtuMaster() const { return rtuMaster_; }
 
 private:
+    struct PendingRaw {
+        bool queued = false;
+        uint8_t payload[242] = {0};
+        size_t length = 0;
+    };
+
     struct PendingWrite {
         bool queued = false;
         modbus::ChannelConfig channel;
@@ -498,6 +568,10 @@ private:
         pendingWrite_ = PendingWrite{};
         activeWrite_ = PendingWrite{};
         writeInFlight_ = false;
+        pendingRaw_ = PendingRaw{};
+        activeRaw_ = PendingRaw{};
+        rawInFlight_ = false;
+        rawCompletionPending_ = false;
     }
 
     static bool dataValueToScalar(const modbus::ChannelConfig& channel,
@@ -663,9 +737,14 @@ private:
     std::vector<modbus::ChannelConfig> channels_;
     PollCache cache_[modbus::kCompatibilitySlotCount];
     PollCompletion completedPoll_;
+    RawCompletion rawCompletion_;
+    PendingRaw pendingRaw_;
+    PendingRaw activeRaw_;
     PendingWrite pendingWrite_;
     PendingWrite activeWrite_;
     bool pollCompletionPending_ = false;
+    bool rawCompletionPending_ = false;
+    bool rawInFlight_ = false;
     bool writeInFlight_ = false;
     size_t pollChannelIndex_ = 0;
     uint8_t pollRetryCount_ = 0;

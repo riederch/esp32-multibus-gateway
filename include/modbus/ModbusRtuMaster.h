@@ -29,6 +29,7 @@ enum class RtuTransactionKind : uint8_t {
     None,
     Read,
     Write,
+    Raw,
 };
 
 inline bool makeRtuSerialConfig(const Rs485SerialSettings& settings,
@@ -187,6 +188,37 @@ public:
         return true;
     }
 
+    bool startRaw(const uint8_t* payload, size_t length) {
+        lastExceptionCode_ = 0;
+        if (!started_ || transactionActive_ || payload == nullptr ||
+            length == 0 || length > sizeof(activeRequest_)) {
+            if (!transactionActive_) fail(RtuDecodeStatus::InvalidConfig);
+            return false;
+        }
+
+        drainReceiveBuffer();
+        waitInterFrameGap();
+
+        digitalWrite(board::MODBUS_DIR, HIGH);
+        delayMicroseconds(txEnableGuardUs());
+        const size_t sent = serial_.write(payload, length);
+        serial_.flush();
+        delayMicroseconds(txDisableGuardUs());
+        digitalWrite(board::MODBUS_DIR, LOW);
+
+        if (sent != length) return fail(RtuDecodeStatus::Truncated);
+
+        activeRequestLength_ = length;
+        memcpy(activeRequest_, payload, length);
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        transactionStartedAtMs_ = millis();
+        lastResponseByteAtUs_ = 0;
+        transactionKind_ = RtuTransactionKind::Raw;
+        transactionActive_ = true;
+        return true;
+    }
+
     RtuTransactionResult pollRead(DecodedScalar values[2], uint8_t& valueCount) {
         valueCount = 0;
         if (!transactionActive_) return RtuTransactionResult::Idle;
@@ -262,6 +294,54 @@ public:
         }
 
         return RtuTransactionResult::Pending;
+    }
+
+    RtuTransactionResult pollRaw(uint8_t* output,
+                                    size_t capacity,
+                                    size_t& written) {
+        written = 0;
+        if (!transactionActive_) return RtuTransactionResult::Idle;
+        if (transactionKind_ != RtuTransactionKind::Raw || output == nullptr) {
+            return RtuTransactionResult::Failure;
+        }
+
+        while (serial_.available() > 0) {
+            const int raw = serial_.read();
+            if (raw < 0) break;
+            if (responseLength_ >= sizeof(response_)) {
+                finishFailure(RtuDecodeStatus::BufferTooSmall);
+                return RtuTransactionResult::Failure;
+            }
+            response_[responseLength_++] = static_cast<uint8_t>(raw);
+            lastResponseByteAtUs_ = micros();
+        }
+
+        const bool idleComplete =
+            responseLength_ > 0 &&
+            lastResponseByteAtUs_ != 0 &&
+            static_cast<uint32_t>(micros() - lastResponseByteAtUs_) >= calculatedInterFrameDelayUs();
+        const bool timedOut = millis() - transactionStartedAtMs_ >= config_.responseTimeoutMs;
+
+        if (!idleComplete && !timedOut) return RtuTransactionResult::Pending;
+        if (responseLength_ == 0) {
+            finishFailure(RtuDecodeStatus::Truncated);
+            return RtuTransactionResult::Failure;
+        }
+        if (capacity < responseLength_) {
+            finishFailure(RtuDecodeStatus::BufferTooSmall);
+            return RtuTransactionResult::Failure;
+        }
+
+        memcpy(output, response_, responseLength_);
+        written = responseLength_;
+        transactionActive_ = false;
+        transactionKind_ = RtuTransactionKind::None;
+        responseLength_ = 0;
+        expectedResponseLength_ = 0;
+        lastStatus_ = RtuDecodeStatus::Ok;
+        online_ = true;
+        ++successfulTransactions_;
+        return RtuTransactionResult::Success;
     }
 
     void cancelTransaction() {
@@ -390,12 +470,13 @@ private:
     RtuSerialConfig config_;
     ChannelConfig activeChannel_;
     uint8_t activeValueIndex_ = 0;
-    uint8_t activeRequest_[17] = {0};
+    uint8_t activeRequest_[242] = {0};
     size_t activeRequestLength_ = 0;
-    uint8_t response_[32] = {0};
+    uint8_t response_[242] = {0};
     size_t responseLength_ = 0;
     size_t expectedResponseLength_ = 0;
     uint32_t transactionStartedAtMs_ = 0;
+    uint32_t lastResponseByteAtUs_ = 0;
     bool transactionActive_ = false;
     RtuTransactionKind transactionKind_ = RtuTransactionKind::None;
     bool started_ = false;
