@@ -118,6 +118,17 @@ public:
     void loop() {
         if (!radioReady_ || !provisioned_ || !persistenceHealthy_) return;
 
+        if (rejoinRequested_) {
+            rejoinRequested_ = false;
+            joined_ = false;
+            node_.clearSession();
+            if (!stateStore_.clearSession(stateIdentity_)) {
+                persistenceHealthy_ = false;
+                return;
+            }
+            nextJoinAtMs_ = millis();
+        }
+
         if (joined_) {
             if (config_.classC) pollClassCDownlink();
             return;
@@ -166,6 +177,12 @@ public:
         }
 
         dispatchApplicationDownlink(downlinkDetails, downlink, downlinkSize);
+        return true;
+    }
+
+    bool requestRejoin() {
+        if (!radioReady_ || !provisioned_ || !persistenceHealthy_) return false;
+        rejoinRequested_ = true;
         return true;
     }
 
@@ -320,6 +337,7 @@ private:
     bool radioReady_ = false;
     bool joined_ = false;
     bool persistenceHealthy_ = false;
+    bool rejoinRequested_ = false;
     int16_t lastState_ = RADIOLIB_ERR_NONE;
     int16_t lastClassCState_ = RADIOLIB_ERR_NONE;
     uint32_t nextJoinAtMs_ = 0;
