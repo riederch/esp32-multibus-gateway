@@ -50,6 +50,8 @@ public:
         mqtt["retain_state"] = config.mqtt.retainState;
         mqtt["home_assistant_discovery"] = config.mqtt.homeAssistantDiscovery;
         mqtt["home_assistant_prefix"] = config.mqtt.homeAssistantPrefix;
+        mqtt["tls_enabled"] = config.mqtt.tlsEnabled;
+        mqtt["ca_certificate"] = config.mqtt.caCertificate;
 
         output = "";
         serializeJsonPretty(doc, output);
@@ -129,6 +131,8 @@ public:
             next.mqtt.retainState = mqtt["retain_state"] | true;
             next.mqtt.homeAssistantDiscovery = mqtt["home_assistant_discovery"] | false;
             next.mqtt.homeAssistantPrefix = String(mqtt["home_assistant_prefix"] | "homeassistant");
+            next.mqtt.tlsEnabled = mqtt["tls_enabled"] | false;
+            next.mqtt.caCertificate = String(mqtt["ca_certificate"] | "");
         }
 
         const auto validation = validateConfig(next.components);
