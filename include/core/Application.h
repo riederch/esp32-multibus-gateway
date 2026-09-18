@@ -174,6 +174,7 @@ private:
         PeriodicReportEnquiry,
         UtcTimezone,
         LnsTimeSync,
+        DstSettings,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -187,6 +188,7 @@ private:
         lorawan::PeriodicReportEnquiryCommand periodicReportEnquiry;
         lorawan::UtcTimezoneCommand utcTimezone;
         lorawan::LnsTimeSyncCommand lnsTimeSync;
+        lorawan::DstSettingsCommand dstSettings;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -303,6 +305,14 @@ private:
                     consumed == 0) {
                     return false;
                 }
+            } else if (header.channelId == lorawan::FPort85Codec::kModbusChannel &&
+                       header.type == lorawan::FPort85Codec::kDstSettingsType) {
+                parsed.kind = ParsedCommandKind::DstSettings;
+                if (lorawan::FPort85Codec::decodeDstSettingsCommand(
+                        payload + offset, length - offset, parsed.dstSettings, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                        header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
                 parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
@@ -377,6 +387,9 @@ private:
                     break;
                 case ParsedCommandKind::LnsTimeSync:
                     if (!lora_.requestNetworkTimeSync()) return false;
+                    break;
+                case ParsedCommandKind::DstSettings:
+                    if (!applyDstSettingsCommand(command.dstSettings)) return false;
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
@@ -481,6 +494,27 @@ private:
         return false;
     }
 
+    bool applyDstSettingsCommand(const lorawan::DstSettingsCommand& command) {
+        time::DstSettings dst;
+        dst.enabled = command.enabled;
+        dst.biasMinutes = command.biasMinutes;
+        dst.start.month = command.startMonth;
+        dst.start.week = command.startWeek;
+        dst.start.weekday = command.startWeekday;
+        dst.start.minuteOfDay = command.startMinuteOfDay;
+        dst.end.month = command.endMonth;
+        dst.end.week = command.endWeek;
+        dst.end.weekday = command.endWeekday;
+        dst.end.minuteOfDay = command.endMinuteOfDay;
+        if (!time::validDstSettings(dst)) return false;
+
+        time::Settings updated = timeSettings_;
+        updated.dst = dst;
+        if (!timeSettingsStore_.save(updated)) return false;
+        timeSettings_ = updated;
+        return true;
+    }
+
     bool applyUtcTimezoneCommand(const lorawan::UtcTimezoneCommand& command) {
         if (!time::validUtcOffsetMinutes(command.offsetMinutes)) return false;
 
@@ -579,6 +613,9 @@ private:
         Serial.printf("  Compatibility report interval: %u s\n",
                       static_cast<unsigned>(reportScheduler_.settings().seconds));
         Serial.printf("  UTC offset: %+d min\n", static_cast<int>(timeSettings_.utcOffsetMinutes));
+        Serial.printf("  DST: %s, bias=%u min\n",
+                      timeSettings_.dst.enabled ? "enabled" : "disabled",
+                      static_cast<unsigned>(timeSettings_.dst.biasMinutes));
         const auto& rs485 = modbus_.rs485SerialSettings();
         Serial.printf("  RS485: %lu baud, %u data bits, stop=%u, parity=%u\n",
                       static_cast<unsigned long>(rs485.baudRate),
