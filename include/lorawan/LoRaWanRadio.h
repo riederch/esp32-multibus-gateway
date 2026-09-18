@@ -4,6 +4,7 @@
 #include <RadioLib.h>
 #include <SPI.h>
 #include <stdint.h>
+#include <sys/time.h>
 #include "board/BoardPins.h"
 #include "core/DeviceConfig.h"
 #include "core/LoRaWanIdentity.h"
@@ -130,6 +131,10 @@ public:
         }
 
         if (joined_) {
+            if (networkTimeSyncRequested_) {
+                networkTimeSyncRequested_ = false;
+                performNetworkTimeSync();
+            }
             if (config_.classC) pollClassCDownlink();
             return;
         }
@@ -186,6 +191,12 @@ public:
         return true;
     }
 
+    bool requestNetworkTimeSync() {
+        if (!joined_ || !persistenceHealthy_) return false;
+        networkTimeSyncRequested_ = true;
+        return true;
+    }
+
     bool provisioned() const { return provisioned_; }
     bool radioReady() const { return radioReady_; }
     bool joined() const { return joined_; }
@@ -193,6 +204,9 @@ public:
     bool persistenceHealthy() const { return persistenceHealthy_; }
     int16_t lastState() const { return lastState_; }
     int16_t lastClassCState() const { return lastClassCState_; }
+    int16_t lastTimeSyncState() const { return lastTimeSyncState_; }
+    uint32_t lastNetworkTimeUnix() const { return lastNetworkTimeUnix_; }
+    uint16_t lastNetworkTimeMilliseconds() const { return lastNetworkTimeMilliseconds_; }
     uint32_t devAddr() const { return joined_ ? node_.getDevAddr() : 0; }
 
 private:
@@ -236,6 +250,43 @@ private:
         return parseEui(config_.joinEui, joinEui_) &&
                parseEui(devEuiText_, devEui_) &&
                parseKey(config_.appKey, appKey_);
+    }
+
+    bool performNetworkTimeSync() {
+        lastState_ = node_.sendMacCommandReq(RADIOLIB_LORAWAN_MAC_DEVICE_TIME);
+        if (lastState_ != RADIOLIB_ERR_NONE) return false;
+
+        uint8_t downlink[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE] = {0};
+        size_t downlinkSize = 0;
+        LoRaWANEvent_t uplinkDetails;
+        LoRaWANEvent_t downlinkDetails;
+        lastState_ = node_.sendReceive(
+            nullptr,
+            0,
+            0,
+            downlink,
+            &downlinkSize,
+            false,
+            &uplinkDetails,
+            &downlinkDetails);
+
+        if (!persistSession()) return false;
+        if (lastState_ < RADIOLIB_ERR_NONE) return false;
+
+        uint32_t unixSeconds = 0;
+        uint16_t milliseconds = 0;
+        lastTimeSyncState_ = node_.getMacDeviceTimeAns(&unixSeconds, &milliseconds, true);
+        if (lastTimeSyncState_ != RADIOLIB_ERR_NONE) return false;
+
+        timeval tv;
+        tv.tv_sec = static_cast<time_t>(unixSeconds);
+        tv.tv_usec = static_cast<suseconds_t>(milliseconds) * 1000;
+        if (settimeofday(&tv, nullptr) != 0) return false;
+
+        lastNetworkTimeUnix_ = unixSeconds;
+        lastNetworkTimeMilliseconds_ = milliseconds;
+        dispatchApplicationDownlink(downlinkDetails, downlink, downlinkSize);
+        return true;
     }
 
     bool persistSession() {
@@ -338,8 +389,12 @@ private:
     bool joined_ = false;
     bool persistenceHealthy_ = false;
     bool rejoinRequested_ = false;
+    bool networkTimeSyncRequested_ = false;
     int16_t lastState_ = RADIOLIB_ERR_NONE;
     int16_t lastClassCState_ = RADIOLIB_ERR_NONE;
+    int16_t lastTimeSyncState_ = RADIOLIB_ERR_NONE;
+    uint32_t lastNetworkTimeUnix_ = 0;
+    uint16_t lastNetworkTimeMilliseconds_ = 0;
     uint32_t nextJoinAtMs_ = 0;
 };
 
