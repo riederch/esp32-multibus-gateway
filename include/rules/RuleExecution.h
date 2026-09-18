@@ -59,6 +59,37 @@ inline bool isDeviceRestartCondition(const StoredFrame& frame) {
            frame.data[3] == 0x16;
 }
 
+inline bool allowedServerMessageByte(uint8_t value) {
+    return (value >= 'A' && value <= 'Z') ||
+           (value >= 'a' && value <= 'z') ||
+           (value >= '0' && value <= '9') ||
+           value == ',' || value == '.' || value == ' ' || value == '!';
+}
+
+inline bool validServerMessage(const uint8_t* payload, size_t length) {
+    if (payload == nullptr || length < 2 || length > 48) return false;
+    for (size_t i = 0; i < length; ++i) {
+        if (!allowedServerMessageByte(payload[i])) return false;
+    }
+    return true;
+}
+
+inline bool matchesServerMessageCondition(const StoredFrame& frame,
+                                          const uint8_t* payload,
+                                          size_t length) {
+    if (!validServerMessage(payload, length) ||
+        !frame.present() || frame.length < 7 ||
+        frame.data[0] != 0xf9 || frame.data[1] != 0x7d ||
+        frame.data[3] != 0x14) {
+        return false;
+    }
+
+    const uint8_t expectedLength = frame.data[4];
+    return expectedLength == length &&
+           frame.length == static_cast<size_t>(5U + expectedLength) &&
+           memcmp(frame.data + 5, payload, length) == 0;
+}
+
 inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
     ActionPlan plan;
     if (!frame.present() || frame.length < 4 ||
