@@ -162,6 +162,9 @@ private:
                 escape(config_->mqtt.caCertificate) + "</textarea></label>"
                 "<button type='submit'>Save MQTT and reboot</button></form></fieldset>";
 
+        html += "<fieldset><legend>Recent Events</legend>"
+                "<div id='eventNotice'></div><pre id='eventList'>Loading...</pre></fieldset>";
+
         html += "<fieldset><legend>Backup / Restore</legend>"
                 "<p class='warning'>Current backup files contain configuration secrets in clear text. Store them securely.</p>"
                 "<p><a href='/api/system/backup'>Download configuration backup</a></p>"
@@ -172,10 +175,26 @@ private:
         html += "<form method='get' action='/change-password'><button>Change admin password</button></form> "
                 "<form method='post' action='/logout' style='display:inline'><button>Logout</button></form> "
                 "<form method='post' action='/api/reboot' style='display:inline'><button>Reboot</button></form>";
-        html += "<script>async function restoreBackup(){const f=document.getElementById('restoreFile').files[0];"
+        html += "<script>"
+                "let eventAfter=0,eventLines=[];"
+                "async function loadEvents(){"
+                "try{const r=await fetch('/api/events?after='+eventAfter,{cache:'no-store'});"
+                "if(!r.ok)return;const d=await r.json();"
+                "if(d.missed_before>0)document.getElementById('eventNotice').textContent="
+                "'Missed '+d.missed_before+' event(s) before the current ring.';"
+                "for(const e of d.events){"
+                "eventAfter=Math.max(eventAfter,Number(e.sequence)||0);"
+                "const ts=e.timestamp?new Date(e.timestamp*1000).toISOString():'no-time';"
+                "eventLines.push('#'+e.sequence+' '+ts+' ['+e.severity+'] '+e.source+'/'+e.type+(e.detail?' '+e.detail:''));"
+                "}if(eventLines.length>32)eventLines=eventLines.slice(-32);"
+                "document.getElementById('eventList').textContent=eventLines.length?eventLines.join('\\n'):'No events';"
+                "}catch(e){document.getElementById('eventNotice').textContent='Event API unavailable';}}"
+                "async function restoreBackup(){const f=document.getElementById('restoreFile').files[0];"
                 "if(!f)return;const s=document.getElementById('restoreStatus');s.textContent='Uploading...';"
                 "const r=await fetch('/api/system/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});"
-                "s.textContent=await r.text();}</script></body></html>";
+                "s.textContent=await r.text();}"
+                "loadEvents();setInterval(loadEvents,5000);"
+                "</script></body></html>";
         server_.send(200, "text/html", html);
     }
 
