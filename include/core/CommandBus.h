@@ -29,6 +29,14 @@ struct ChannelWriteCommand {
     char origin[kCommandOriginLength] = {0};
 };
 
+inline bool validCommandText(const char* input,
+                             size_t capacity,
+                             bool allowEmpty = false) {
+    if (input == nullptr || capacity == 0) return false;
+    const size_t length = strnlen(input, capacity);
+    return (allowEmpty || length > 0) && length < capacity;
+}
+
 inline bool setCommandText(char* output,
                            size_t capacity,
                            const char* input,
@@ -48,7 +56,7 @@ public:
 
     bool enqueue(ChannelWriteCommand command) {
         if (count_ >= Capacity || command.channelId == 0 ||
-            !setCommandText(command.origin, sizeof(command.origin), command.origin)) {
+            !validCommandText(command.origin, sizeof(command.origin))) {
             return false;
         }
 
