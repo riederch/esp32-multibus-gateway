@@ -121,7 +121,13 @@ public:
         uint32_t completedAtMs = 0;
     };
 
+    enum class RawRequestOrigin : uint8_t {
+        PassThrough,
+        Rule,
+    };
+
     struct RawCompletion {
+        RawRequestOrigin origin = RawRequestOrigin::PassThrough;
         bool success = false;
         uint8_t payload[242] = {0};
         size_t length = 0;
@@ -288,6 +294,7 @@ public:
                 if (result == modbus::RtuTransactionResult::Pending) return;
 
                 rawCompletion_ = RawCompletion{};
+                rawCompletion_.origin = activeRaw_.origin;
                 rawCompletion_.success = result == modbus::RtuTransactionResult::Success;
                 rawCompletion_.length = rawCompletion_.success ? responseLength : 0;
                 if (rawCompletion_.length > 0) {
@@ -345,6 +352,7 @@ public:
             pendingRaw_.queued = false;
             if (!rtuMaster_.startRaw(activeRaw_.payload, activeRaw_.length)) {
                 rawCompletion_ = RawCompletion{};
+                rawCompletion_.origin = activeRaw_.origin;
                 rawCompletion_.success = false;
                 rawCompletion_.completedAtMs = millis();
                 rawCompletionPending_ = true;
@@ -385,18 +393,12 @@ public:
     }
 
     bool queueRawRequest(const uint8_t* payload, size_t length) {
-        if (mode_ != ModbusMode::Master || !active_ ||
-            masterSettings_.passThroughMode != modbus::PassThroughMode::Active ||
-            payload == nullptr || length == 0 || length > sizeof(pendingRaw_.payload) ||
-            pendingRaw_.queued || rawInFlight_) {
-            return false;
-        }
+        if (masterSettings_.passThroughMode != modbus::PassThroughMode::Active) return false;
+        return queueRawRequestInternal(payload, length, RawRequestOrigin::PassThrough);
+    }
 
-        pendingRaw_ = PendingRaw{};
-        pendingRaw_.queued = true;
-        pendingRaw_.length = length;
-        memcpy(pendingRaw_.payload, payload, length);
-        return true;
+    bool queueRuleRawRequest(const uint8_t* payload, size_t length) {
+        return queueRawRequestInternal(payload, length, RawRequestOrigin::Rule);
     }
 
     bool takeRawCompletion(RawCompletion& completion) {
@@ -543,6 +545,7 @@ public:
 
 private:
     struct PendingRaw {
+        RawRequestOrigin origin = RawRequestOrigin::PassThrough;
         bool queued = false;
         uint8_t payload[242] = {0};
         size_t length = 0;
@@ -563,6 +566,23 @@ private:
         modbus::RtuDecodeStatus lastStatus = modbus::RtuDecodeStatus::Truncated;
         uint8_t lastExceptionCode = 0;
     };
+
+    bool queueRawRequestInternal(const uint8_t* payload,
+                                 size_t length,
+                                 RawRequestOrigin origin) {
+        if (mode_ != ModbusMode::Master || !active_ ||
+            payload == nullptr || length == 0 || length > sizeof(pendingRaw_.payload) ||
+            pendingRaw_.queued || rawInFlight_) {
+            return false;
+        }
+
+        pendingRaw_ = PendingRaw{};
+        pendingRaw_.origin = origin;
+        pendingRaw_.queued = true;
+        pendingRaw_.length = length;
+        memcpy(pendingRaw_.payload, payload, length);
+        return true;
+    }
 
     void clearPendingWrite() {
         pendingWrite_ = PendingWrite{};
