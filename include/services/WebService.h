@@ -34,6 +34,7 @@ public:
         server_.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
         server_.on("/api/config/components", HTTP_POST, [this]() { handleComponentConfig(); });
         server_.on("/api/config/network", HTTP_POST, [this]() { handleNetworkConfig(); });
+        server_.on("/api/config/mqtt", HTTP_POST, [this]() { handleMqttConfig(); });
         server_.on("/api/system/backup", HTTP_GET, [this]() { handleBackupDownload(); });
         server_.on("/api/system/restore", HTTP_POST, [this]() { handleBackupRestore(); });
         server_.on("/api/reboot", HTTP_POST, [this]() { handleReboot(); });
@@ -129,6 +130,23 @@ private:
                 "<label>Friendly name <input name='friendly' value='" + escape(config_->network.friendlyName) + "'></label>"
                 "<button type='submit'>Save network and reboot</button></form></fieldset>";
 
+        html += "<fieldset><legend>MQTT</legend><form method='post' action='/api/config/mqtt'>"
+                "<label><input type='checkbox' name='enabled' value='1'" +
+                String(config_->mqtt.enabled ? " checked" : "") +
+                "> Enable MQTT</label>"
+                "<label>Broker host <input name='host' value='" + escape(config_->mqtt.host) + "'></label>"
+                "<label>Broker port <input type='number' min='1' max='65535' name='port' value='" +
+                String(config_->mqtt.port) + "' required></label>"
+                "<label>Username <input name='username' value='" + escape(config_->mqtt.username) + "'></label>"
+                "<label>Password <input type='password' name='password' placeholder='leave empty to keep current'></label>"
+                "<label>Topic prefix <input name='topic_prefix' value='" + escape(config_->mqtt.topicPrefix) + "' required></label>"
+                "<label>Publish interval (seconds) <input type='number' min='1' max='3600' name='publish_interval' value='" +
+                String(config_->mqtt.publishIntervalSeconds) + "' required></label>"
+                "<label><input type='checkbox' name='retain_state' value='1'" +
+                String(config_->mqtt.retainState ? " checked" : "") +
+                "> Retain channel state</label>"
+                "<button type='submit'>Save MQTT and reboot</button></form></fieldset>";
+
         html += "<fieldset><legend>Backup / Restore</legend>"
                 "<p class='warning'>Current backup files contain configuration secrets in clear text. Store them securely.</p>"
                 "<p><a href='/api/system/backup'>Download configuration backup</a></p>"
@@ -210,7 +228,9 @@ private:
         body += "\"victron\":\"" + String(toString(config_->components.victron)) + "\",";
         body += "\"lora\":\"" + String(toString(config_->components.lora)) + "\",";
         body += "\"modbus\":\"" + String(toString(config_->components.modbus)) + "\",";
-        body += "\"gnss\":\"" + String(toString(config_->components.gnss)) + "\"}";
+        body += "\"gnss\":\"" + String(toString(config_->components.gnss)) + "\",";
+        body += "\"mqtt_enabled\":" + String(config_->mqtt.enabled ? "true" : "false") + ",";
+        body += "\"mqtt_host\":\"" + jsonEscape(config_->mqtt.host) + "\"}";
         server_.send(200, "application/json", body);
     }
 
@@ -252,6 +272,62 @@ private:
 
         if (!configStore_->save(*config_)) {
             server_.send(500, "text/plain", "Failed to persist network configuration");
+            return;
+        }
+
+        server_.send(200, "text/plain", "Saved. Rebooting...");
+        scheduleReboot();
+    }
+
+    static bool parseUint16Arg(const String& value,
+                               uint16_t minimum,
+                               uint16_t maximum,
+                               uint16_t& output) {
+        if (value.isEmpty()) return false;
+        uint32_t parsed = 0;
+        for (size_t i = 0; i < value.length(); ++i) {
+            const char ch = value.charAt(i);
+            if (ch < '0' || ch > '9') return false;
+            parsed = parsed * 10U + static_cast<uint32_t>(ch - '0');
+            if (parsed > maximum) return false;
+        }
+        if (parsed < minimum || parsed > maximum) return false;
+        output = static_cast<uint16_t>(parsed);
+        return true;
+    }
+
+    void handleMqttConfig() {
+        if (!requireAuth()) return;
+
+        MqttConfig next = config_->mqtt;
+        next.enabled = server_.hasArg("enabled") && server_.arg("enabled") == "1";
+        next.host = server_.arg("host");
+        next.username = server_.arg("username");
+        if (server_.hasArg("password") && !server_.arg("password").isEmpty()) {
+            next.password = server_.arg("password");
+        }
+        next.topicPrefix = server_.arg("topic_prefix");
+        next.retainState =
+            server_.hasArg("retain_state") && server_.arg("retain_state") == "1";
+
+        uint16_t port = 0;
+        uint16_t publishInterval = 0;
+        if (!parseUint16Arg(server_.arg("port"), 1, 65535, port) ||
+            !parseUint16Arg(server_.arg("publish_interval"), 1, 3600, publishInterval)) {
+            server_.send(400, "text/plain", "Invalid MQTT port or publish interval");
+            return;
+        }
+        next.port = port;
+        next.publishIntervalSeconds = publishInterval;
+
+        if (!next.valid()) {
+            server_.send(400, "text/plain", "Invalid MQTT configuration");
+            return;
+        }
+
+        config_->mqtt = next;
+        if (!configStore_->save(*config_)) {
+            server_.send(500, "text/plain", "Failed to persist MQTT configuration");
             return;
         }
 
