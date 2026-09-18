@@ -180,6 +180,116 @@ static void testCrcFailure() {
     assert(ModbusRtuCodec::decodeReadResponse(config, response, sizeof(response), values, count, exception) == RtuDecodeStatus::CrcMismatch);
 }
 
+static void testBuildWriteSingleCoil() {
+    ChannelConfig config = channel(WireDataType::Coil, 2);
+    config.address = 0x0010;
+
+    DecodedScalar value;
+    value.kind = ScalarKind::Boolean;
+    value.booleanValue = true;
+
+    uint8_t request[17] = {0};
+    size_t written = 0;
+    assert(ModbusRtuCodec::buildWriteRequest(
+        config, 1, value, request, sizeof(request), written) == RtuDecodeStatus::Ok);
+    assert(written == 8);
+    const uint8_t expectedPrefix[] = {0x01, 0x05, 0x00, 0x11, 0xff, 0x00};
+    assert(memcmp(request, expectedPrefix, sizeof(expectedPrefix)) == 0);
+    assert(ModbusRtuCodec::crc16(request, 6) ==
+           (static_cast<uint16_t>(request[7]) << 8U | request[6]));
+}
+
+static void testBuildWriteSingleHoldingRegisterWithByteSwap() {
+    ChannelConfig config = channel(WireDataType::Hold16BA);
+    config.address = 0x006b;
+
+    DecodedScalar value;
+    value.kind = ScalarKind::UnsignedInteger;
+    value.unsignedValue = 0x1234;
+
+    uint8_t request[17] = {0};
+    size_t written = 0;
+    assert(ModbusRtuCodec::buildWriteRequest(
+        config, 0, value, request, sizeof(request), written) == RtuDecodeStatus::Ok);
+    assert(written == 8);
+    const uint8_t expectedPrefix[] = {0x01, 0x06, 0x00, 0x6b, 0x34, 0x12};
+    assert(memcmp(request, expectedPrefix, sizeof(expectedPrefix)) == 0);
+}
+
+static void testBuildWriteFloatMultipleRegisters() {
+    ChannelConfig config = channel(WireDataType::HoldFloatCDAB, 2);
+    config.address = 100;
+
+    DecodedScalar value;
+    value.kind = ScalarKind::FloatingPoint;
+    value.floatingValue = 5.0;
+
+    uint8_t request[17] = {0};
+    size_t written = 0;
+    assert(ModbusRtuCodec::buildWriteRequest(
+        config, 1, value, request, sizeof(request), written) == RtuDecodeStatus::Ok);
+    assert(written == 13);
+    const uint8_t expectedPrefix[] = {
+        0x01, 0x10, 0x00, 0x66, 0x00, 0x02, 0x04,
+        0x00, 0x00, 0x40, 0xa0
+    };
+    assert(memcmp(request, expectedPrefix, sizeof(expectedPrefix)) == 0);
+}
+
+static void testWriteRejectsReadOnlyAndPartialTypes() {
+    DecodedScalar value;
+    value.kind = ScalarKind::UnsignedInteger;
+    value.unsignedValue = 1;
+    uint8_t request[17] = {0};
+    size_t written = 0;
+
+    ChannelConfig input = channel(WireDataType::Input16AB);
+    assert(ModbusRtuCodec::buildWriteRequest(
+        input, 0, value, request, sizeof(request), written) == RtuDecodeStatus::InvalidConfig);
+
+    ChannelConfig partial = channel(WireDataType::Hold32Upper16);
+    assert(ModbusRtuCodec::buildWriteRequest(
+        partial, 0, value, request, sizeof(request), written) == RtuDecodeStatus::InvalidConfig);
+}
+
+static void testDecodeWriteResponses() {
+    ChannelConfig config = channel(WireDataType::Hold32ABCD);
+    config.address = 0x0100;
+
+    DecodedScalar value;
+    value.kind = ScalarKind::UnsignedInteger;
+    value.unsignedValue = 0x12345678U;
+
+    uint8_t request[17] = {0};
+    size_t requestLength = 0;
+    assert(ModbusRtuCodec::buildWriteRequest(
+        config, 0, value, request, sizeof(request), requestLength) == RtuDecodeStatus::Ok);
+
+    uint8_t response[8] = {
+        request[0], request[1], request[2], request[3], request[4], request[5], 0, 0
+    };
+    withCrc(response, 6);
+
+    uint8_t exception = 0;
+    assert(ModbusRtuCodec::decodeWriteResponse(
+        config, 0, request, requestLength, response, sizeof(response), exception) ==
+        RtuDecodeStatus::Ok);
+
+    uint8_t exceptionResponse[5] = {
+        config.slaveId,
+        static_cast<uint8_t>(request[1] | 0x80U),
+        0x03,
+        0,
+        0
+    };
+    withCrc(exceptionResponse, 3);
+    assert(ModbusRtuCodec::decodeWriteResponse(
+        config, 0, request, requestLength,
+        exceptionResponse, sizeof(exceptionResponse), exception) ==
+        RtuDecodeStatus::ExceptionResponse);
+    assert(exception == 0x03);
+}
+
 int main() {
     testKnownCrcVector();
     testBuildHoldingRegisterRead();
@@ -192,5 +302,10 @@ int main() {
     testDecodeCoils();
     testExceptionResponse();
     testCrcFailure();
+    testBuildWriteSingleCoil();
+    testBuildWriteSingleHoldingRegisterWithByteSwap();
+    testBuildWriteFloatMultipleRegisters();
+    testWriteRejectsReadOnlyAndPartialTypes();
+    testDecodeWriteResponses();
     return 0;
 }
