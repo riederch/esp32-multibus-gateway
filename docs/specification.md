@@ -268,6 +268,18 @@ History supports local viewing, remote retrieval and store-and-forward after con
 
 ## Wi-Fi and Web UI
 
+### Event API
+
+Authenticated local diagnostics expose the bounded Core event ring at:
+
+`GET /api/events?after=<sequence>`
+
+The response contains the current oldest/latest sequence, `missed_before` for
+the requested cursor and all still-available events newer than `after`.
+Reading this endpoint does not mutate the EventBus and does not advance MQTT or
+other transport cursors.
+
+
 ### Client mode
 
 Connect to a configured WLAN and expose the Web UI through IP address and mDNS hostname.

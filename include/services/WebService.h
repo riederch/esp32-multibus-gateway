@@ -1,12 +1,14 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <WebServer.h>
 #include <esp_system.h>
 #include <initializer_list>
 #include "core/BackupService.h"
 #include "core/ConfigStore.h"
 #include "core/DeviceConfig.h"
+#include "core/EventBus.h"
 #include "core/SecurityStore.h"
 #include "services/NetworkService.h"
 
@@ -17,11 +19,13 @@ public:
     bool begin(DeviceConfig& config,
                ConfigStore& configStore,
                SecurityStore& security,
-               NetworkService& network) {
+               NetworkService& network,
+               EventBus<32>& events) {
         config_ = &config;
         configStore_ = &configStore;
         security_ = &security;
         network_ = &network;
+        events_ = &events;
 
         const char* headers[] = {"Cookie"};
         server_.collectHeaders(headers, 1);
@@ -32,6 +36,7 @@ public:
         server_.on("/change-password", HTTP_GET, [this]() { handleChangePasswordPage(); });
         server_.on("/change-password", HTTP_POST, [this]() { handleChangePassword(); });
         server_.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
+        server_.on("/api/events", HTTP_GET, [this]() { handleEvents(); });
         server_.on("/api/config/components", HTTP_POST, [this]() { handleComponentConfig(); });
         server_.on("/api/config/network", HTTP_POST, [this]() { handleNetworkConfig(); });
         server_.on("/api/config/mqtt", HTTP_POST, [this]() { handleMqttConfig(); });
@@ -241,6 +246,80 @@ private:
         body += "\"gnss\":\"" + String(toString(config_->components.gnss)) + "\",";
         body += "\"mqtt_enabled\":" + String(config_->mqtt.enabled ? "true" : "false") + ",";
         body += "\"mqtt_host\":\"" + jsonEscape(config_->mqtt.host) + "\"}";
+        server_.send(200, "application/json", body);
+    }
+
+    static bool parseUint64(const String& value, uint64_t& output) {
+        if (value.isEmpty()) {
+            output = 0;
+            return true;
+        }
+
+        uint64_t parsed = 0;
+        for (size_t i = 0; i < value.length(); ++i) {
+            const char ch = value.charAt(i);
+            if (ch < '0' || ch > '9') return false;
+            const uint8_t digit = static_cast<uint8_t>(ch - '0');
+            if (parsed > (UINT64_MAX - digit) / 10U) return false;
+            parsed = parsed * 10U + digit;
+        }
+        output = parsed;
+        return true;
+    }
+
+    static const char* eventSeverityName(EventSeverity severity) {
+        switch (severity) {
+            case EventSeverity::Info: return "info";
+            case EventSeverity::Warning: return "warning";
+            case EventSeverity::Error: return "error";
+            default: return "info";
+        }
+    }
+
+    void handleEvents() {
+        if (!requireAuth()) return;
+        if (events_ == nullptr) {
+            server_.send(503, "text/plain", "Event bus unavailable");
+            return;
+        }
+
+        uint64_t after = 0;
+        if (server_.hasArg("after") && !parseUint64(server_.arg("after"), after)) {
+            server_.send(400, "text/plain", "Invalid after sequence");
+            return;
+        }
+
+        JsonDocument doc;
+        const uint64_t oldest = events_->oldestSequence();
+        const uint64_t latest = events_->latestSequence();
+        doc["oldest_sequence"] = oldest;
+        doc["latest_sequence"] = latest;
+        doc["missed_before"] = events_->missedSince(after);
+
+        JsonArray items = doc["events"].to<JsonArray>();
+        if (oldest != 0 && after < latest) {
+            uint64_t sequence = after == UINT64_MAX ? UINT64_MAX : after + 1U;
+            if (sequence < oldest) sequence = oldest;
+
+            while (sequence <= latest && items.size() < events_->capacity()) {
+                EventRecord event;
+                if (events_->read(sequence, event)) {
+                    JsonObject item = items.add<JsonObject>();
+                    item["sequence"] = event.sequence;
+                    item["timestamp"] = event.timestampUnix;
+                    item["severity"] = eventSeverityName(event.severity);
+                    item["source"] = event.source;
+                    item["type"] = event.type;
+                    if (event.detail[0] != '\0') item["detail"] = event.detail;
+                }
+                if (sequence == UINT64_MAX) break;
+                ++sequence;
+            }
+        }
+
+        String body;
+        serializeJson(doc, body);
+        server_.sendHeader("Cache-Control", "no-store");
         server_.send(200, "application/json", body);
     }
 
@@ -460,6 +539,7 @@ private:
     ConfigStore* configStore_ = nullptr;
     SecurityStore* security_ = nullptr;
     NetworkService* network_ = nullptr;
+    EventBus<32>* events_ = nullptr;
     String sessionToken_;
     uint8_t failedLogins_ = 0;
     uint32_t lockUntil_ = 0;
