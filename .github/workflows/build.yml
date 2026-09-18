@@ -76,6 +76,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_execution_test.cpp -o /tmp/rule_execution_test
           /tmp/rule_execution_test
 
+      - name: Run Core event bus tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/event_bus_test.cpp -o /tmp/event_bus_test
+          /tmp/event_bus_test
+
       - name: Run MQTT protocol tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/mqtt_protocol_test.cpp -o /tmp/mqtt_protocol_test
