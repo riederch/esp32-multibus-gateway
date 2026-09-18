@@ -7,6 +7,7 @@
 #include "ModbusChannel.h"
 #include "ModbusRtuCodec.h"
 #include "Rs485Settings.h"
+#include "RtuPassiveFrameCollector.h"
 
 namespace multibus {
 namespace modbus {
@@ -106,6 +107,30 @@ public:
     RtuDecodeStatus lastStatus() const { return lastStatus_; }
     uint8_t lastExceptionCode() const { return lastExceptionCode_; }
     const RtuSerialConfig& config() const { return config_; }
+
+    PassiveFrameResult pollPassiveFrame(uint8_t* output,
+                                       size_t capacity,
+                                       size_t& written) {
+        written = 0;
+        if (!started_ || transactionActive_) return PassiveFrameResult::Idle;
+
+        while (serial_.available() > 0) {
+            const int raw = serial_.read();
+            if (raw < 0) break;
+            passiveCollector_.feed(static_cast<uint8_t>(raw), micros());
+        }
+
+        return passiveCollector_.poll(
+            micros(),
+            calculatedInterFrameDelayUs(),
+            output,
+            capacity,
+            written);
+    }
+
+    bool passiveFramePending() const {
+        return passiveCollector_.pending();
+    }
 
     bool reconfigure(const RtuSerialConfig& config) {
         end();
@@ -351,6 +376,7 @@ public:
         expectedResponseLength_ = 0;
         digitalWrite(board::MODBUS_DIR, LOW);
         if (started_) drainReceiveBuffer();
+        passiveCollector_.reset();
     }
 
     // Compatibility helper for callers that still require a synchronous API.
@@ -485,6 +511,7 @@ private:
     uint32_t failedTransactions_ = 0;
     RtuDecodeStatus lastStatus_ = RtuDecodeStatus::Truncated;
     uint8_t lastExceptionCode_ = 0;
+    RtuPassiveFrameCollector<242> passiveCollector_;
 };
 
 } // namespace modbus

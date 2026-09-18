@@ -134,6 +134,12 @@ public:
         uint32_t completedAtMs = 0;
     };
 
+    struct PassiveFrame {
+        uint8_t payload[242] = {0};
+        size_t length = 0;
+        uint32_t completedAtMs = 0;
+    };
+
     void setMode(ModbusMode mode) {
         mode_ = mode;
         active_ = false;
@@ -347,6 +353,35 @@ public:
             return;
         }
 
+        {
+            uint8_t passive[242] = {0};
+            size_t passiveLength = 0;
+            const modbus::PassiveFrameResult passiveResult =
+                rtuMaster_.pollPassiveFrame(passive, sizeof(passive), passiveLength);
+
+            if (passiveResult == modbus::PassiveFrameResult::FrameReady) {
+                passiveFrame_ = PassiveFrame{};
+                passiveFrame_.length = passiveLength;
+                if (passiveLength > 0) memcpy(passiveFrame_.payload, passive, passiveLength);
+                passiveFrame_.completedAtMs = millis();
+                passiveFramePending_ = true;
+                ++passiveFramesReceived_;
+                nextPollAtMs_ = millis();
+                return;
+            }
+
+            if (passiveResult == modbus::PassiveFrameResult::Overflow) {
+                ++passiveFrameOverflows_;
+                nextPollAtMs_ = millis();
+                return;
+            }
+
+            if (passiveResult == modbus::PassiveFrameResult::Pending ||
+                rtuMaster_.passiveFramePending()) {
+                return;
+            }
+        }
+
         if (pendingRaw_.queued) {
             activeRaw_ = pendingRaw_;
             pendingRaw_.queued = false;
@@ -405,6 +440,13 @@ public:
         if (!rawCompletionPending_) return false;
         completion = rawCompletion_;
         rawCompletionPending_ = false;
+        return true;
+    }
+
+    bool takePassiveFrame(PassiveFrame& frame) {
+        if (!passiveFramePending_) return false;
+        frame = passiveFrame_;
+        passiveFramePending_ = false;
         return true;
     }
 
@@ -592,6 +634,8 @@ private:
         activeRaw_ = PendingRaw{};
         rawInFlight_ = false;
         rawCompletionPending_ = false;
+        passiveFramePending_ = false;
+        passiveFrame_ = PassiveFrame{};
     }
 
     static bool dataValueToScalar(const modbus::ChannelConfig& channel,
@@ -758,12 +802,14 @@ private:
     PollCache cache_[modbus::kCompatibilitySlotCount];
     PollCompletion completedPoll_;
     RawCompletion rawCompletion_;
+    PassiveFrame passiveFrame_;
     PendingRaw pendingRaw_;
     PendingRaw activeRaw_;
     PendingWrite pendingWrite_;
     PendingWrite activeWrite_;
     bool pollCompletionPending_ = false;
     bool rawCompletionPending_ = false;
+    bool passiveFramePending_ = false;
     bool rawInFlight_ = false;
     bool writeInFlight_ = false;
     size_t pollChannelIndex_ = 0;
@@ -771,6 +817,8 @@ private:
     uint32_t nextPollAtMs_ = 0;
     uint32_t successfulWrites_ = 0;
     uint32_t failedWrites_ = 0;
+    uint32_t passiveFramesReceived_ = 0;
+    uint32_t passiveFrameOverflows_ = 0;
 };
 
 class GnssComponent final : public Component, public DataSource {

@@ -66,6 +66,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_state_test.cpp -o /tmp/rule_state_test
           /tmp/rule_state_test
 
+      - name: Run passive RTU frame collector tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rtu_passive_frame_collector_test.cpp -o /tmp/rtu_passive_frame_collector_test
+          /tmp/rtu_passive_frame_collector_test
+
       - name: Run rule execution tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/rule_execution_test.cpp -o /tmp/rule_execution_test
