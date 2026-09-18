@@ -16,6 +16,7 @@ enum class ExecutableAction : uint8_t {
     ServerMessage,
     UploadData,
     RawRs485,
+    UploadAlarm,
     Reboot,
     Unsupported,
 };
@@ -25,6 +26,7 @@ struct ActionPlan {
     uint32_t delayMs = 0;
     const uint8_t* payload = nullptr;
     uint8_t payloadLength = 0;
+    bool thresholdReleaseEnabled = false;
 };
 
 inline bool matchesTimeCondition(const StoredFrame& frame,
@@ -141,6 +143,13 @@ inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
         plan.payloadLength = messageLength;
     } else if (actionKind == 0x04U && frame.length == 8) {
         plan.action = ExecutableAction::UploadData;
+    } else if (actionKind == 0x05U && frame.length == 9) {
+        if (frame.data[8] > 0x01U) {
+            plan.action = ExecutableAction::Unsupported;
+            return plan;
+        }
+        plan.action = ExecutableAction::UploadAlarm;
+        plan.thresholdReleaseEnabled = frame.data[8] == 0x01U;
     } else if (actionKind == 0x06U && frame.length == 8) {
         plan.action = ExecutableAction::Reboot;
     } else {
