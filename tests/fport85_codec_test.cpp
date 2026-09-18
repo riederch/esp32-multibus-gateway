@@ -7,6 +7,7 @@
 
 using multibus::lorawan::BasicControlCommand;
 using multibus::lorawan::DecodeStatus;
+using multibus::lorawan::DstSettingsCommand;
 using multibus::lorawan::EncodeStatus;
 using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::ModbusChannelCommand;
@@ -339,7 +340,60 @@ static void testLnsTimeSyncRejectsInvalidValue() {
     assert(consumed == 0);
 }
 
+static void testDstSettingsReferenceVector() {
+    const uint8_t payload[] = {
+        0xf9, 0x72, 0xbc,
+        0x03, 0x57, 0x3c, 0x00,
+        0x0a, 0x57, 0x3c, 0x00
+    };
+    DstSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeDstSettingsCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+    assert(command.enabled);
+    assert(command.biasMinutes == 60);
+    assert(command.startMonth == 3);
+    assert(command.startWeek == 5);
+    assert(command.startWeekday == 7);
+    assert(command.startMinuteOfDay == 60);
+    assert(command.endMonth == 10);
+    assert(command.endWeek == 5);
+    assert(command.endWeekday == 7);
+    assert(command.endMinuteOfDay == 60);
+}
+
+static void testDstSettingsAllowsDisable() {
+    const uint8_t payload[] = {
+        0xf9, 0x72, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    };
+    DstSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeDstSettingsCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(!command.enabled);
+    assert(command.biasMinutes == 0);
+}
+
+static void testDstSettingsRejectsInvalidEnabledTransition() {
+    const uint8_t payload[] = {
+        0xf9, 0x72, 0xbc,
+        0x0d, 0x57, 0x3c, 0x00,
+        0x0a, 0x57, 0x3c, 0x00
+    };
+    DstSettingsCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodeDstSettingsCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 int main() {
+    testDstSettingsReferenceVector();
+    testDstSettingsAllowsDisable();
+    testDstSettingsRejectsInvalidEnabledTransition();
     testLnsTimeSyncReferenceVector();
     testLnsTimeSyncRejectsInvalidValue();
     testUtcTimezoneReferenceVector();
