@@ -280,6 +280,23 @@ Reading this endpoint does not mutate the EventBus and does not advance MQTT or
 other transport cursors.
 
 
+### Web authentication hardening
+
+Authenticated Web sessions use independent random session and CSRF tokens.
+Mutating routes require CSRF validation, sessions expire after 30 minutes of
+inactivity and have a 12-hour absolute lifetime.
+
+Progressive login throttling is global to the device runtime: every five
+consecutive failed password verifications starts a lockout. Lockouts begin at
+30 seconds and double on subsequent failed batches up to 15 minutes. A
+successful login resets the penalty tier. Locked requests return HTTP 429 with
+`Retry-After`.
+
+The throttle intentionally remains RAM-resident so unauthenticated traffic
+cannot force repeated NVS writes and flash wear. A device reboot resets the
+current penalty tier.
+
+
 ### Client mode
 
 Connect to a configured WLAN and expose the Web UI through IP address and mDNS hostname.
