@@ -50,6 +50,8 @@ enum class BasicControlCommand : uint8_t {
     Reboot,
 };
 
+struct PeriodicReportEnquiryCommand {};
+
 struct ModbusMasterSettingsCommand {
     modbus::ModbusMasterSettings settings;
 };
@@ -80,6 +82,7 @@ public:
     static constexpr uint8_t kReportIntervalType = 0x03;
     static constexpr uint8_t kRejoinType = 0x04;
     static constexpr uint8_t kRebootType = 0x10;
+    static constexpr uint8_t kPeriodicReportEnquiryType = 0x28;
     static constexpr uint8_t kRs485ConfigType = 0x78;
     static constexpr uint8_t kModbusGlobalConfigType = 0x79;
     static constexpr uint8_t kRs485SettingsEnquiryType = 0x7A;
@@ -98,6 +101,7 @@ public:
         if (header.channelId == kSystemChannel && header.type == kReportIntervalType) return true;
         if (header.channelId == kSystemChannel && header.type == kRejoinType) return true;
         if (header.channelId == kSystemChannel && header.type == kRebootType) return true;
+        if (header.channelId == kSystemChannel && header.type == kPeriodicReportEnquiryType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485ConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kModbusGlobalConfigType) return true;
         if (header.channelId == kModbusChannel && header.type == kRs485SettingsEnquiryType) return true;
@@ -127,6 +131,23 @@ public:
             return DecodeStatus::Unsupported;
         }
 
+        consumed = 3;
+        return DecodeStatus::Ok;
+    }
+
+    static DecodeStatus decodePeriodicReportEnquiryCommand(
+        const uint8_t* payload,
+        size_t length,
+        PeriodicReportEnquiryCommand& command,
+        size_t& consumed) {
+        consumed = 0;
+        if (payload == nullptr || length < 3) return DecodeStatus::Truncated;
+        if (payload[0] != kSystemChannel || payload[1] != kPeriodicReportEnquiryType) {
+            return DecodeStatus::Unsupported;
+        }
+        if (payload[2] != 0xff) return DecodeStatus::Invalid;
+
+        command = PeriodicReportEnquiryCommand{};
         consumed = 3;
         return DecodeStatus::Ok;
     }

@@ -28,6 +28,7 @@ public:
         pending_ = false;
         cursor_ = 0;
         retryAtMs_ = 0;
+        immediateReportRequested_ = false;
     }
 
     bool applySettings(const ReportIntervalSettings& settings, uint32_t nowMs) {
@@ -38,6 +39,10 @@ public:
     }
 
     const ReportIntervalSettings& settings() const { return settings_; }
+
+    void requestImmediateReport() {
+        immediateReportRequested_ = true;
+    }
 
     void recordPoll(const modbus::ChannelConfig& channel,
                     bool success,
@@ -78,11 +83,14 @@ public:
         }
 
         if (!reportInProgress_) {
-            if (static_cast<int32_t>(nowMs - nextReportAtMs_) < 0) return ReportBuildStatus::NotDue;
+            const bool periodicDue = static_cast<int32_t>(nowMs - nextReportAtMs_) >= 0;
+            if (!immediateReportRequested_ && !periodicDue) return ReportBuildStatus::NotDue;
+
             memcpy(reportSamples_, samples_, sizeof(samples_));
             reportInProgress_ = true;
             cursor_ = 0;
-            nextReportAtMs_ = nowMs + intervalMs();
+            immediateReportRequested_ = false;
+            if (periodicDue) nextReportAtMs_ = nowMs + intervalMs();
         }
 
         size_t length = 0;
@@ -187,6 +195,7 @@ private:
     uint8_t pendingNextCursor_ = 0;
     bool reportInProgress_ = false;
     bool pending_ = false;
+    bool immediateReportRequested_ = false;
     uint8_t pendingPayload_[kCompatibilityReportPayloadLimit] = {0};
     size_t pendingLength_ = 0;
 };

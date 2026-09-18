@@ -12,6 +12,7 @@ using multibus::lorawan::FPort85Codec;
 using multibus::lorawan::ModbusChannelCommand;
 using multibus::lorawan::ModbusChannelOperation;
 using multibus::lorawan::ModbusMasterSettingsCommand;
+using multibus::lorawan::PeriodicReportEnquiryCommand;
 using multibus::lorawan::Rs485SettingsCommand;
 using multibus::lorawan::Rs485SettingsEnquiryCommand;
 using multibus::lorawan::Rs485SettingsEnquiryKind;
@@ -272,7 +273,27 @@ static void testBasicControlRejectsInvalidMagic() {
     assert(consumed == 0);
 }
 
+static void testPeriodicReportEnquiryReferenceVector() {
+    const uint8_t payload[] = {0xff, 0x28, 0xff};
+    PeriodicReportEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodePeriodicReportEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Ok);
+    assert(consumed == sizeof(payload));
+}
+
+static void testPeriodicReportEnquiryRejectsInvalidMagic() {
+    const uint8_t payload[] = {0xff, 0x28, 0x00};
+    PeriodicReportEnquiryCommand command;
+    size_t consumed = 0;
+    assert(FPort85Codec::decodePeriodicReportEnquiryCommand(
+        payload, sizeof(payload), command, consumed) == DecodeStatus::Invalid);
+    assert(consumed == 0);
+}
+
 int main() {
+    testPeriodicReportEnquiryReferenceVector();
+    testPeriodicReportEnquiryRejectsInvalidMagic();
     testRebootReferenceVector();
     testRejoinReferenceVector();
     testBasicControlRejectsInvalidMagic();

@@ -161,6 +161,7 @@ private:
     enum class ParsedCommandKind : uint8_t {
         ReportInterval,
         BasicControl,
+        PeriodicReportEnquiry,
         ModbusChannel,
         Rs485Settings,
         ModbusMasterSettings,
@@ -171,6 +172,7 @@ private:
         ParsedCommandKind kind = ParsedCommandKind::ModbusChannel;
         lorawan::ReportIntervalCommand reportInterval;
         lorawan::BasicControlCommand basicControl = lorawan::BasicControlCommand::Rejoin;
+        lorawan::PeriodicReportEnquiryCommand periodicReportEnquiry;
         lorawan::ModbusChannelCommand modbusChannel;
         lorawan::Rs485SettingsCommand rs485Settings;
         lorawan::ModbusMasterSettingsCommand modbusMasterSettings;
@@ -271,6 +273,14 @@ private:
                     return false;
                 }
             } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
+                       header.type == lorawan::FPort85Codec::kPeriodicReportEnquiryType) {
+                parsed.kind = ParsedCommandKind::PeriodicReportEnquiry;
+                if (lorawan::FPort85Codec::decodePeriodicReportEnquiryCommand(
+                        payload + offset, length - offset, parsed.periodicReportEnquiry, consumed) != lorawan::DecodeStatus::Ok ||
+                    consumed == 0) {
+                    return false;
+                }
+            } else if (header.channelId == lorawan::FPort85Codec::kSystemChannel &&
                 header.type == lorawan::FPort85Codec::kReportIntervalType) {
                 parsed.kind = ParsedCommandKind::ReportInterval;
                 if (!lorawan::decodeReportIntervalCommand(
@@ -327,6 +337,9 @@ private:
                     } else if (command.basicControl == lorawan::BasicControlCommand::Reboot) {
                         rebootRequested_ = true;
                     }
+                    break;
+                case ParsedCommandKind::PeriodicReportEnquiry:
+                    reportScheduler_.requestImmediateReport();
                     break;
                 case ParsedCommandKind::ReportInterval:
                     if (!applyReportIntervalCommand(command.reportInterval)) return false;
