@@ -122,6 +122,33 @@ The EventBus is runtime infrastructure, not persistent history. Selected event
 classes may additionally be copied into the persistent history subsystem later.
 
 
+### Core command bus
+
+Inbound transport commands are normalized before execution. The initial command
+type is a channel write containing:
+
+- monotonic command sequence
+- target channel ID
+- typed scalar/text value
+- transport origin
+
+The CommandBus is a bounded FIFO. Transports enqueue validated commands but do
+not call DataSource write methods directly. Application consumes a limited
+number of commands per loop iteration, resolves the current ChannelBinding and
+DataPointDescriptor again, verifies writability/type compatibility and then
+calls the DataSource.
+
+Execution emits normalized command events:
+
+- `commands/executed`
+- `commands/rejected`
+- `commands/execution-failed`
+- `commands/queue-full`
+
+This keeps MQTT, future LoRaWAN extensions and Meshtastic command ingress on the
+same Core execution path.
+
+
 ## Modbus
 
 ### Master mode
