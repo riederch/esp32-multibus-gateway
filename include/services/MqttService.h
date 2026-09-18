@@ -30,8 +30,9 @@ public:
         context_ = context;
         deviceId_ = deviceId;
 
-        if (!config_->valid() ||
-            !mqtt::validTopicPrefix(config_->topicPrefix.c_str()) ||
+        if (!config_->valid()) return false;
+        if (!config_->enabled) return true;
+        if (!mqtt::validTopicPrefix(config_->topicPrefix.c_str()) ||
             !mqtt::validDeviceId(deviceId_.c_str())) {
             return false;
         }
