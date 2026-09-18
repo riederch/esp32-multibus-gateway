@@ -59,7 +59,7 @@ public:
         return FPort85Codec::encodeCollectionException(channel.slot, output, capacity, written);
     }
 
-private:
+public:
     static EncodeStatus encodeScalarBytes(const modbus::ChannelConfig& channel,
                                           const modbus::DecodedScalar& scalar,
                                           uint8_t* output,
