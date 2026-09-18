@@ -40,13 +40,26 @@ public:
             config.lorawan.extensionFPort = prefs_.getUChar("lw_ext_port", LORAWAN_DEFAULT_EXTENSION_FPORT);
         }
 
+        if (storedSchema >= 3) {
+            config.mqtt.enabled = prefs_.getBool("mq_en", false);
+            config.mqtt.host = prefs_.getString("mq_host", "");
+            config.mqtt.port = prefs_.getUShort("mq_port", 1883);
+            config.mqtt.username = prefs_.getString("mq_user", "");
+            config.mqtt.password = prefs_.getString("mq_pass", "");
+            config.mqtt.topicPrefix = prefs_.getString("mq_prefix", "multibus");
+            config.mqtt.publishIntervalSeconds = prefs_.getUShort("mq_pub_s", 30);
+            config.mqtt.retainState = prefs_.getBool("mq_retain", true);
+        }
+
         needsSave_ = storedSchema != DEVICE_CONFIG_SCHEMA_VERSION;
-        return validateConfig(config.components) == ConfigValidationResult::Ok;
+        return validateConfig(config.components) == ConfigValidationResult::Ok &&
+               config.mqtt.valid();
     }
 
     bool save(const DeviceConfig& config) {
         if (config.schemaVersion != DEVICE_CONFIG_SCHEMA_VERSION ||
-            validateConfig(config.components) != ConfigValidationResult::Ok) {
+            validateConfig(config.components) != ConfigValidationResult::Ok ||
+            !config.mqtt.valid()) {
             return false;
         }
 
@@ -63,6 +76,14 @@ public:
         prefs_.putString("lw_app_key", config.lorawan.appKey);
         prefs_.putBool("lw_class_c", config.lorawan.classC);
         prefs_.putUChar("lw_ext_port", config.lorawan.extensionFPort);
+        prefs_.putBool("mq_en", config.mqtt.enabled);
+        prefs_.putString("mq_host", config.mqtt.host);
+        prefs_.putUShort("mq_port", config.mqtt.port);
+        prefs_.putString("mq_user", config.mqtt.username);
+        prefs_.putString("mq_pass", config.mqtt.password);
+        prefs_.putString("mq_prefix", config.mqtt.topicPrefix);
+        prefs_.putUShort("mq_pub_s", config.mqtt.publishIntervalSeconds);
+        prefs_.putBool("mq_retain", config.mqtt.retainState);
 
         needsSave_ = false;
         return prefs_.getUInt("schema", 0) == DEVICE_CONFIG_SCHEMA_VERSION;
