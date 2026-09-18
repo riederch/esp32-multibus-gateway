@@ -299,6 +299,29 @@ private:
         return static_cast<Application*>(context)->handleLoRaDownlink(fport, payload, length);
     }
 
+    void evaluateChannelRules(const ModbusComponent::PollCompletion& completion) {
+        if (!completion.success || completion.valueCount == 0) return;
+
+        const uint32_t now = millis();
+        for (uint8_t id = 1; id <= rules::kRuleCount; ++id) {
+            const rules::RuleRecord* record = ruleState_.rule(id);
+            if (record == nullptr || !record->enabled) continue;
+
+            rules::ChannelConditionPlan plan;
+            if (!rules::decodeChannelCondition(record->frames[0], plan)) continue;
+            if (plan.channelId != static_cast<uint8_t>(completion.channel.slot + 1U)) continue;
+
+            if (rules::evaluateChannelCondition(
+                    plan,
+                    completion.values[0],
+                    now,
+                    channelRuleRuntime_[id - 1U])) {
+                scheduleRuleActions(id, *record);
+                ++ruleChannelTriggers_;
+            }
+        }
+    }
+
     void updateCompatibilityConnectionState() {
         const bool connected = lora_.connected();
         if (!compatibilityConnectionInitialized_) {
@@ -370,6 +393,7 @@ private:
         ModbusComponent::PollCompletion completion;
         if (!modbus_.takeCompletedPoll(completion)) return;
 
+        evaluateChannelRules(completion);
         reportScheduler_.recordPoll(
             completion.channel,
             completion.success,
@@ -1640,6 +1664,7 @@ private:
     size_t ruleReplyCursor_ = 0;
     ScheduledRuleAction scheduledRuleActions_[rules::kRuleCount * 3U];
     uint32_t lastRuleMinuteKey_[rules::kRuleCount] = {0};
+    rules::ChannelConditionRuntime channelRuleRuntime_[rules::kRuleCount];
     HistorySample historySamples_[modbus::kCompatibilitySlotCount];
     SecurityStore security_;
     BoardService board_;
@@ -1684,6 +1709,7 @@ private:
     uint32_t ruleRawRs485Completions_ = 0;
     uint32_t ruleRawRs485Failures_ = 0;
     uint32_t ruleServerMessagesMatched_ = 0;
+    uint32_t ruleChannelTriggers_ = 0;
     bool historyQueryActive_ = false;
     bool retransmissionCursorInitialized_ = false;
     bool historyNetworkStateInitialized_ = false;

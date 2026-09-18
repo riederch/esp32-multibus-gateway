@@ -11,6 +11,10 @@ using multibus::rules::decodeExecutableAction;
 using multibus::rules::isDeviceRestartCondition;
 using multibus::rules::matchesTimeCondition;
 using multibus::rules::matchesServerMessageCondition;
+using multibus::rules::ChannelConditionPlan;
+using multibus::rules::ChannelConditionRuntime;
+using multibus::rules::decodeChannelCondition;
+using multibus::rules::evaluateChannelCondition;
 using multibus::rules::validServerMessage;
 using multibus::time::DstSettings;
 using multibus::time::LocalDateTime;
@@ -147,7 +151,90 @@ static void testServerMessageCondition() {
     assert(!validServerMessage(binary, sizeof(binary)));
 }
 
+static void testDocumentedAboveChannelCondition() {
+    const uint8_t data[] = {
+        0xf9, 0x7d, 0x82, 0x12,
+        0x04, 0x13,
+        0x10, 0x27, 0x00, 0x00,
+        0x88, 0x13, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xa0, 0x40
+    };
+    ChannelConditionPlan plan;
+    assert(decodeChannelCondition(frame(data, sizeof(data)), plan));
+    assert(plan.channelId == 4);
+    assert(plan.continueMode == 1);
+    assert(plan.continueTimeMs == 10000);
+    assert(plan.lockTimeMs == 5000);
+    assert(plan.maximum == 5.0f);
+
+    multibus::modbus::DecodedScalar value;
+    value.kind = multibus::modbus::ScalarKind::FloatingPoint;
+    value.floatingValue = 6.0;
+
+    ChannelConditionRuntime runtime;
+    assert(!evaluateChannelCondition(plan, value, 1000, runtime));
+    assert(!evaluateChannelCondition(plan, value, 10999, runtime));
+    assert(evaluateChannelCondition(plan, value, 11000, runtime));
+    assert(!evaluateChannelCondition(plan, value, 12000, runtime));
+
+    value.floatingValue = 4.0;
+    assert(!evaluateChannelCondition(plan, value, 16000, runtime));
+    value.floatingValue = 7.0;
+    assert(!evaluateChannelCondition(plan, value, 17000, runtime));
+    assert(evaluateChannelCondition(plan, value, 27000, runtime));
+}
+
+static void testBooleanImmediateCondition() {
+    const uint8_t data[] = {
+        0xf9, 0x7d, 0x81, 0x12,
+        0x01, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    };
+    ChannelConditionPlan plan;
+    assert(decodeChannelCondition(frame(data, sizeof(data)), plan));
+
+    multibus::modbus::DecodedScalar value;
+    value.kind = multibus::modbus::ScalarKind::Boolean;
+    value.booleanValue = true;
+    ChannelConditionRuntime runtime;
+    assert(evaluateChannelCondition(plan, value, 1, runtime));
+    assert(!evaluateChannelCondition(plan, value, 2, runtime));
+    value.booleanValue = false;
+    assert(!evaluateChannelCondition(plan, value, 3, runtime));
+    value.booleanValue = true;
+    assert(evaluateChannelCondition(plan, value, 4, runtime));
+}
+
+static void testChangeRecentCondition() {
+    const uint8_t data[] = {
+        0xf9, 0x7d, 0x81, 0x12,
+        0x01, 0x06,
+        0,0,0,0, 0,0,0,0,
+        0,0,0,0,
+        0x00,0x00,0x20,0x40
+    };
+    ChannelConditionPlan plan;
+    assert(decodeChannelCondition(frame(data, sizeof(data)), plan));
+
+    multibus::modbus::DecodedScalar value;
+    value.kind = multibus::modbus::ScalarKind::FloatingPoint;
+    value.floatingValue = 10.0;
+    ChannelConditionRuntime runtime;
+    assert(!evaluateChannelCondition(plan, value, 100, runtime));
+    value.floatingValue = 11.0;
+    assert(!evaluateChannelCondition(plan, value, 200, runtime));
+    value.floatingValue = 13.5;
+    assert(evaluateChannelCondition(plan, value, 300, runtime));
+}
+
 int main() {
+    testDocumentedAboveChannelCondition();
+    testBooleanImmediateCondition();
+    testChangeRecentCondition();
     testServerMessageCondition();
     testWeeklyTimeCondition();
     testMonthlyTimeCondition();

@@ -2,7 +2,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
+#include <string.h>
 
+#include "modbus/ModbusRtuCodec.h"
 #include "rules/RuleState.h"
 #include "time/LocalTime.h"
 
@@ -144,6 +147,220 @@ inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
         plan.action = ExecutableAction::Unsupported;
     }
     return plan;
+}
+
+enum class ChannelThresholdMode : uint8_t {
+    FalseValue = 0,
+    TrueValue = 1,
+    Below = 2,
+    Above = 3,
+    Within = 4,
+    ChangeRecent = 6,
+    ChangeInterval = 7,
+};
+
+struct ChannelConditionPlan {
+    uint8_t channelId = 0;
+    uint8_t continueMode = 0;
+    ChannelThresholdMode mode = ChannelThresholdMode::FalseValue;
+    uint32_t continueTimeMs = 0;
+    uint32_t lockTimeMs = 0;
+    float minimum = 0.0f;
+    float maximum = 0.0f;
+    uint32_t changeIntervalMs = 0;
+};
+
+struct ChannelConditionRuntime {
+    bool active = false;
+    bool firedForActive = false;
+    uint32_t activeSinceMs = 0;
+    uint32_t lockedUntilMs = 0;
+    bool havePrevious = false;
+    double previousValue = 0.0;
+    uint32_t previousAtMs = 0;
+};
+
+inline uint32_t readU32Le(const uint8_t* data) {
+    return static_cast<uint32_t>(data[0]) |
+           (static_cast<uint32_t>(data[1]) << 8U) |
+           (static_cast<uint32_t>(data[2]) << 16U) |
+           (static_cast<uint32_t>(data[3]) << 24U);
+}
+
+inline float readFloat32Le(const uint8_t* data) {
+    const uint32_t bits = readU32Le(data);
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+inline bool decodeChannelCondition(const StoredFrame& frame,
+                                   ChannelConditionPlan& plan) {
+    if (!frame.present() || frame.length != 22 ||
+        frame.data[0] != 0xf9 || frame.data[1] != 0x7d ||
+        frame.data[3] != 0x12) {
+        return false;
+    }
+
+    const uint8_t channelId = frame.data[4];
+    const uint8_t modeByte = frame.data[5];
+    const uint8_t thresholdMode = modeByte & 0x0fU;
+    const uint8_t continueMode = (modeByte >> 4U) & 0x0fU;
+    if (channelId < 1 || channelId > 32 ||
+        continueMode > 1 ||
+        !((thresholdMode <= 4) || thresholdMode == 6 || thresholdMode == 7)) {
+        return false;
+    }
+
+    plan = ChannelConditionPlan{};
+    plan.channelId = channelId;
+    plan.continueMode = continueMode;
+    plan.mode = static_cast<ChannelThresholdMode>(thresholdMode);
+    plan.continueTimeMs = readU32Le(frame.data + 6);
+    plan.lockTimeMs = readU32Le(frame.data + 10);
+    if (plan.mode == ChannelThresholdMode::ChangeInterval) {
+        plan.changeIntervalMs = readU32Le(frame.data + 14);
+        plan.maximum = readFloat32Le(frame.data + 18);
+        plan.minimum = 0.0f;
+    } else {
+        plan.minimum = readFloat32Le(frame.data + 14);
+        plan.maximum = readFloat32Le(frame.data + 18);
+    }
+
+    if (plan.continueTimeMs > 86400000UL || plan.lockTimeMs > 86400000UL) {
+        return false;
+    }
+    if (plan.changeIntervalMs > 86400000UL ||
+        !isfinite(plan.minimum) || !isfinite(plan.maximum)) return false;
+    return true;
+}
+
+inline bool scalarToDouble(const modbus::DecodedScalar& scalar, double& value) {
+    switch (scalar.kind) {
+        case modbus::ScalarKind::Boolean:
+            value = scalar.booleanValue ? 1.0 : 0.0;
+            return true;
+        case modbus::ScalarKind::SignedInteger:
+            value = static_cast<double>(scalar.signedValue);
+            return true;
+        case modbus::ScalarKind::UnsignedInteger:
+            value = static_cast<double>(scalar.unsignedValue);
+            return true;
+        case modbus::ScalarKind::FloatingPoint:
+            if (!isfinite(scalar.floatingValue)) return false;
+            value = scalar.floatingValue;
+            return true;
+    }
+    return false;
+}
+
+inline bool thresholdPredicate(const ChannelConditionPlan& plan,
+                               const modbus::DecodedScalar& scalar) {
+    double value = 0.0;
+    if (!scalarToDouble(scalar, value)) return false;
+
+    switch (plan.mode) {
+        case ChannelThresholdMode::FalseValue:
+            return scalar.kind == modbus::ScalarKind::Boolean && !scalar.booleanValue;
+        case ChannelThresholdMode::TrueValue:
+            return scalar.kind == modbus::ScalarKind::Boolean && scalar.booleanValue;
+        case ChannelThresholdMode::Below:
+            return value < static_cast<double>(plan.minimum);
+        case ChannelThresholdMode::Above:
+            return value > static_cast<double>(plan.maximum);
+        case ChannelThresholdMode::Within:
+            return value >= static_cast<double>(plan.minimum) &&
+                   value <= static_cast<double>(plan.maximum);
+        case ChannelThresholdMode::ChangeRecent:
+        case ChannelThresholdMode::ChangeInterval:
+            return false;
+    }
+    return false;
+}
+
+inline bool evaluateChannelCondition(const ChannelConditionPlan& plan,
+                                     const modbus::DecodedScalar& scalar,
+                                     uint32_t nowMs,
+                                     ChannelConditionRuntime& runtime) {
+    double value = 0.0;
+    if (!scalarToDouble(scalar, value)) return false;
+
+    if (plan.mode == ChannelThresholdMode::ChangeRecent) {
+        bool fire = false;
+        if (runtime.havePrevious &&
+            static_cast<int32_t>(nowMs - runtime.lockedUntilMs) >= 0) {
+            fire = fabs(value - runtime.previousValue) >=
+                   static_cast<double>(plan.maximum);
+        }
+        runtime.previousValue = value;
+        runtime.previousAtMs = nowMs;
+        runtime.havePrevious = true;
+        if (fire) runtime.lockedUntilMs = nowMs + plan.lockTimeMs;
+        return fire;
+    }
+
+    if (plan.mode == ChannelThresholdMode::ChangeInterval) {
+        if (!runtime.havePrevious) {
+            runtime.previousValue = value;
+            runtime.previousAtMs = nowMs;
+            runtime.havePrevious = true;
+            return false;
+        }
+
+        if (static_cast<uint32_t>(nowMs - runtime.previousAtMs) <
+            plan.changeIntervalMs) {
+            return false;
+        }
+
+        const bool fire =
+            static_cast<int32_t>(nowMs - runtime.lockedUntilMs) >= 0 &&
+            fabs(value - runtime.previousValue) >=
+                static_cast<double>(plan.maximum);
+        runtime.previousValue = value;
+        runtime.previousAtMs = nowMs;
+        if (fire) runtime.lockedUntilMs = nowMs + plan.lockTimeMs;
+        return fire;
+    }
+
+    const bool predicate = thresholdPredicate(plan, scalar);
+    if (static_cast<int32_t>(nowMs - runtime.lockedUntilMs) < 0) {
+        if (!predicate) {
+            runtime.active = false;
+            runtime.firedForActive = false;
+        }
+        return false;
+    }
+
+    if (!predicate) {
+        if (runtime.active && !runtime.firedForActive &&
+            plan.continueMode == 0 && plan.continueTimeMs > 0 &&
+            static_cast<uint32_t>(nowMs - runtime.activeSinceMs) < plan.continueTimeMs) {
+            runtime.active = false;
+            runtime.firedForActive = false;
+            runtime.lockedUntilMs = nowMs + plan.lockTimeMs;
+            return true;
+        }
+        runtime.active = false;
+        runtime.firedForActive = false;
+        return false;
+    }
+
+    if (!runtime.active) {
+        runtime.active = true;
+        runtime.activeSinceMs = nowMs;
+        runtime.firedForActive = false;
+    }
+
+    if (runtime.firedForActive) return false;
+
+    if (plan.continueTimeMs == 0 ||
+        (plan.continueMode == 1 &&
+         static_cast<uint32_t>(nowMs - runtime.activeSinceMs) >= plan.continueTimeMs)) {
+        runtime.firedForActive = true;
+        runtime.lockedUntilMs = nowMs + plan.lockTimeMs;
+        return true;
+    }
+    return false;
 }
 
 inline uint32_t localMinuteKey(const time::LocalDateTime& local) {
