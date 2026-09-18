@@ -133,7 +133,6 @@ Validate:
 Validate/harden:
 
 - password KDF/work factor
-- backup encryption
 - HTTPS/certificate strategy
 
 ## KiCad / PCB release
