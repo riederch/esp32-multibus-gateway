@@ -42,6 +42,9 @@ public:
     static constexpr uint8_t kReadDiscreteInputs = 0x02;
     static constexpr uint8_t kReadHoldingRegisters = 0x03;
     static constexpr uint8_t kReadInputRegisters = 0x04;
+    static constexpr uint8_t kWriteSingleCoil = 0x05;
+    static constexpr uint8_t kWriteSingleRegister = 0x06;
+    static constexpr uint8_t kWriteMultipleRegisters = 0x10;
 
     static uint16_t crc16(const uint8_t* data, size_t length) {
         uint16_t crc = 0xFFFFU;
@@ -117,6 +120,128 @@ public:
         return RtuDecodeStatus::Ok;
     }
 
+    static bool writableType(WireDataType type) {
+        if (type == WireDataType::Coil) return true;
+        const uint8_t raw = static_cast<uint8_t>(type);
+        if (raw == 0x0eU || raw == 0x0fU) return true;
+        if (raw >= 0x10U && raw <= 0x13U) return true;
+        if (raw >= 0x16U && raw <= 0x19U) return true;
+        if (raw >= 0x22U && raw <= 0x29U) return true;
+        return false;
+    }
+
+    static RtuDecodeStatus buildWriteRequest(const ChannelConfig& config,
+                                             uint8_t valueIndex,
+                                             const DecodedScalar& value,
+                                             uint8_t* output,
+                                             size_t capacity,
+                                             size_t& written) {
+        written = 0;
+        if (!validChannelConfig(config) || valueIndex >= config.quantity || !writableType(config.dataType)) {
+            return RtuDecodeStatus::InvalidConfig;
+        }
+        if (output == nullptr) return RtuDecodeStatus::BufferTooSmall;
+
+        if (config.dataType == WireDataType::Coil) {
+            if (value.kind != ScalarKind::Boolean || capacity < 8) return RtuDecodeStatus::InvalidConfig;
+            const uint32_t address = static_cast<uint32_t>(config.address) + valueIndex;
+            if (address > 0xffffU) return RtuDecodeStatus::InvalidConfig;
+
+            output[0] = config.slaveId;
+            output[1] = kWriteSingleCoil;
+            output[2] = static_cast<uint8_t>((address >> 8U) & 0xffU);
+            output[3] = static_cast<uint8_t>(address & 0xffU);
+            output[4] = value.booleanValue ? 0xffU : 0x00U;
+            output[5] = 0x00U;
+            appendCrc(output, 6);
+            written = 8;
+            return RtuDecodeStatus::Ok;
+        }
+
+        const uint8_t wordsPerValue = registersPerValue(config.dataType);
+        if (wordsPerValue == 0) return RtuDecodeStatus::InvalidConfig;
+        const uint32_t address = static_cast<uint32_t>(config.address) +
+                                 static_cast<uint32_t>(valueIndex) * wordsPerValue;
+        if (address + wordsPerValue > 0x10000UL) return RtuDecodeStatus::InvalidConfig;
+
+        uint8_t wire[8] = {0};
+        size_t wireLength = 0;
+        if (!encodeRegisterValue(config, value, wire, sizeof(wire), wireLength)) {
+            return RtuDecodeStatus::InvalidConfig;
+        }
+
+        if (wordsPerValue == 1) {
+            if (capacity < 8 || wireLength != 2) return RtuDecodeStatus::BufferTooSmall;
+            output[0] = config.slaveId;
+            output[1] = kWriteSingleRegister;
+            output[2] = static_cast<uint8_t>((address >> 8U) & 0xffU);
+            output[3] = static_cast<uint8_t>(address & 0xffU);
+            output[4] = wire[0];
+            output[5] = wire[1];
+            appendCrc(output, 6);
+            written = 8;
+            return RtuDecodeStatus::Ok;
+        }
+
+        const size_t frameLength = 9U + wireLength;
+        if (capacity < frameLength) return RtuDecodeStatus::BufferTooSmall;
+        output[0] = config.slaveId;
+        output[1] = kWriteMultipleRegisters;
+        output[2] = static_cast<uint8_t>((address >> 8U) & 0xffU);
+        output[3] = static_cast<uint8_t>(address & 0xffU);
+        output[4] = 0x00U;
+        output[5] = wordsPerValue;
+        output[6] = static_cast<uint8_t>(wireLength);
+        memcpy(output + 7, wire, wireLength);
+        appendCrc(output, 7U + wireLength);
+        written = frameLength;
+        return RtuDecodeStatus::Ok;
+    }
+
+    static RtuDecodeStatus decodeWriteResponse(const ChannelConfig& config,
+                                               uint8_t valueIndex,
+                                               const uint8_t* request,
+                                               size_t requestLength,
+                                               const uint8_t* response,
+                                               size_t responseLength,
+                                               uint8_t& exceptionCode) {
+        exceptionCode = 0;
+        if (!validChannelConfig(config) || valueIndex >= config.quantity ||
+            !writableType(config.dataType) || request == nullptr || response == nullptr) {
+            return RtuDecodeStatus::InvalidConfig;
+        }
+        if (responseLength < 5) return RtuDecodeStatus::Truncated;
+
+        const uint16_t expectedCrc = crc16(response, responseLength - 2);
+        const uint16_t receivedCrc = static_cast<uint16_t>(response[responseLength - 2]) |
+                                     (static_cast<uint16_t>(response[responseLength - 1]) << 8U);
+        if (expectedCrc != receivedCrc) return RtuDecodeStatus::CrcMismatch;
+        if (response[0] != config.slaveId) return RtuDecodeStatus::SlaveMismatch;
+
+        const uint8_t function = requestLength >= 2 ? request[1] : 0;
+        if (response[1] == static_cast<uint8_t>(function | 0x80U)) {
+            if (responseLength != 5) return RtuDecodeStatus::LengthMismatch;
+            exceptionCode = response[2];
+            return RtuDecodeStatus::ExceptionResponse;
+        }
+        if (response[1] != function) return RtuDecodeStatus::FunctionMismatch;
+
+        if (function == kWriteSingleCoil || function == kWriteSingleRegister) {
+            if (requestLength != 8 || responseLength != 8) return RtuDecodeStatus::LengthMismatch;
+            return memcmp(request, response, 6) == 0
+                ? RtuDecodeStatus::Ok
+                : RtuDecodeStatus::LengthMismatch;
+        }
+
+        if (function == kWriteMultipleRegisters) {
+            if (requestLength < 11 || responseLength != 8) return RtuDecodeStatus::LengthMismatch;
+            if (memcmp(request, response, 6) != 0) return RtuDecodeStatus::LengthMismatch;
+            return RtuDecodeStatus::Ok;
+        }
+
+        return RtuDecodeStatus::FunctionMismatch;
+    }
+
     static RtuDecodeStatus decodeReadResponse(const ChannelConfig& config,
                                               const uint8_t* frame,
                                               size_t length,
@@ -171,6 +296,74 @@ public:
     }
 
 private:
+    static void appendCrc(uint8_t* frame, size_t payloadLength) {
+        const uint16_t crc = crc16(frame, payloadLength);
+        frame[payloadLength] = static_cast<uint8_t>(crc & 0xffU);
+        frame[payloadLength + 1U] = static_cast<uint8_t>((crc >> 8U) & 0xffU);
+    }
+
+    static bool encodeRegisterValue(const ChannelConfig& config,
+                                    const DecodedScalar& value,
+                                    uint8_t* wire,
+                                    size_t capacity,
+                                    size_t& written) {
+        written = 0;
+        const size_t width = orderedWidth(config.dataType);
+        if (width == 0 || wire == nullptr || capacity < width) return false;
+
+        uint8_t canonical[8] = {0};
+        if (isFloatingPointType(config.dataType)) {
+            if (value.kind != ScalarKind::FloatingPoint) return false;
+            if (width == 4) {
+                const float scalar = static_cast<float>(value.floatingValue);
+                uint32_t bits = 0;
+                memcpy(&bits, &scalar, sizeof(bits));
+                for (size_t i = 0; i < 4; ++i) {
+                    canonical[i] = static_cast<uint8_t>((bits >> (8U * (3U - i))) & 0xffU);
+                }
+            } else if (width == 8) {
+                uint64_t bits = 0;
+                const double scalar = value.floatingValue;
+                memcpy(&bits, &scalar, sizeof(bits));
+                for (size_t i = 0; i < 8; ++i) {
+                    canonical[i] = static_cast<uint8_t>((bits >> (8U * (7U - i))) & 0xffU);
+                }
+            } else {
+                return false;
+            }
+        } else {
+            uint64_t raw = 0;
+            if (config.signedValue) {
+                if (value.kind != ScalarKind::SignedInteger) return false;
+                raw = static_cast<uint64_t>(value.signedValue);
+            } else {
+                if (value.kind != ScalarKind::UnsignedInteger) return false;
+                raw = value.unsignedValue;
+            }
+
+            const uint8_t bits = static_cast<uint8_t>(width * 8U);
+            if (bits < 64) {
+                const uint64_t mask = (uint64_t{1} << bits) - 1U;
+                if (config.signedValue) {
+                    const int64_t minValue = -(int64_t{1} << (bits - 1U));
+                    const int64_t maxValue = (int64_t{1} << (bits - 1U)) - 1;
+                    if (value.signedValue < minValue || value.signedValue > maxValue) return false;
+                } else if ((raw & ~mask) != 0) {
+                    return false;
+                }
+                raw &= mask;
+            }
+
+            for (size_t i = 0; i < width; ++i) {
+                canonical[i] = static_cast<uint8_t>((raw >> (8U * (width - 1U - i))) & 0xffU);
+            }
+        }
+
+        if (!orderBytes(config.dataType, canonical, width, wire)) return false;
+        written = width;
+        return true;
+    }
+
     static bool decodeRegisterValue(const ChannelConfig& config,
                                     const uint8_t* raw,
                                     size_t length,
