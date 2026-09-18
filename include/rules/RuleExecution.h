@@ -95,6 +95,22 @@ inline bool matchesServerMessageCondition(const StoredFrame& frame,
            memcmp(frame.data + 5, payload, length) == 0;
 }
 
+inline bool matchesRs485CommandCondition(const StoredFrame& frame,
+                                               const uint8_t* payload,
+                                               size_t length) {
+    if (payload == nullptr || length < 2 || length > 48 ||
+        !frame.present() || frame.length < 7 ||
+        frame.data[0] != 0xf9 || frame.data[1] != 0x7d ||
+        frame.data[3] != 0x13) {
+        return false;
+    }
+
+    const uint8_t expectedLength = frame.data[4];
+    return expectedLength == length &&
+           frame.length == static_cast<size_t>(5U + expectedLength) &&
+           memcmp(frame.data + 5, payload, length) == 0;
+}
+
 inline ActionPlan decodeExecutableAction(const StoredFrame& frame) {
     ActionPlan plan;
     if (!frame.present() || frame.length < 4 ||
