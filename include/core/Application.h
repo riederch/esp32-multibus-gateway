@@ -1078,7 +1078,7 @@ private:
         binding.sourceId = modbus_.sourceId();
         binding.pointId = ModbusComponent::pointIdForSlot(channel.slot);
         binding.enabled = true;
-        binding.writable = false;
+        binding.writable = modbus::ModbusRtuCodec::writableType(channel.dataType);
         binding.compatibilityMapped = true;
         binding.compatibilitySlot = channel.slot;
         return channels_.upsert(binding);
