@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "AppConfig.h"
+#include "mqtt/MqttProtocol.h"
 
 namespace multibus {
 
@@ -40,7 +41,8 @@ struct MqttConfig {
 
     bool valid() const {
         if (port == 0 || publishIntervalSeconds < 1 || publishIntervalSeconds > 3600) return false;
-        if (topicPrefix.isEmpty() || topicPrefix.length() > 64) return false;
+        if (topicPrefix.isEmpty() || topicPrefix.length() > 64 ||
+            !mqtt::validTopicPrefix(topicPrefix.c_str())) return false;
         if (enabled && host.isEmpty()) return false;
         return true;
     }
