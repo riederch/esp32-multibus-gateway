@@ -215,6 +215,12 @@ Example:
 
 Future firmware versions should provide configuration migrations where practical so older backups can be restored safely.
 
+## HTTPS and certificate policy
+
+The transport and certificate lifecycle are defined in `docs/https-certificate-strategy.md`.
+
+Normal Wi-Fi client administration is intended to use HTTPS with no authenticated plaintext fallback. The first implementation may retain plaintext HTTP only inside the explicitly scoped commissioning-AP bootstrap path until a trusted-certificate bootstrap is available. Administrator-provisioned certificate/key material is preferred where a private CA exists; a device-generated self-signed certificate is a fallback and requires out-of-band fingerprint verification.
+
 ## Security principles
 
 - no universal/default administrator password
