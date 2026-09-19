@@ -129,3 +129,7 @@ Software implementation is not complete until target-device testing covers:
 ### Transport-policy contract
 
 `include/core/WebTransportPolicy.h` captures the intended transition without depending on Arduino networking classes. It defines that authenticated administration is permitted for commissioning HTTP and station HTTPS, while legacy station HTTP is redirect-only. It also defines the expected administration port, mDNS service and Secure-cookie requirement for each mode. The policy is host-tested and must be consumed by the eventual transport adapter rather than duplicated there.
+
+### Session-policy extraction
+
+`include/core/WebSessionPolicy.h` contains transport-neutral session expiry, exact session-cookie matching and CSRF-token comparison. The current Arduino Web service consumes this policy, so an HTTPS adapter can reuse the same semantics instead of reproducing them. Cookie parsing requires an exact `MBSESSION` name/value match rather than a substring match.
