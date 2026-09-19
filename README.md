@@ -146,5 +146,6 @@ The Core exposes board resources independently of protocol components:
 - `docs/rule-engine.md` - automation model
 - `docs/web-ui.md` - Wi-Fi, Web UI and OLED interaction
 - `docs/security-and-provisioning.md` - authentication, reset and backup/restore
+- `docs/https-certificate-strategy.md` - HTTPS transport, certificate trust and key lifecycle
 - `docs/validation.md` - unresolved technical validation items
 - `docs/backlog.md` - deferred optional features
