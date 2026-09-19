@@ -12,6 +12,7 @@
 #include "core/EventBus.h"
 #include "core/LoginThrottle.h"
 #include "core/SecurityStore.h"
+#include "core/WebSessionPolicy.h"
 #include "services/NetworkService.h"
 
 namespace multibus {
@@ -74,14 +75,17 @@ private:
         if (sessionToken_.isEmpty()) return false;
 
         const uint32_t now = millis();
-        if (static_cast<uint32_t>(now - sessionCreatedAt_) > kSessionMaxLifetimeMs ||
-            static_cast<uint32_t>(now - sessionLastActivityAt_) > kSessionIdleTimeoutMs) {
+        if (WebSessionPolicy::expired(
+                sessionCreatedAt_, sessionLastActivityAt_, now)) {
             invalidateSession();
             return false;
         }
 
         const String cookie = server_.header("Cookie");
-        if (cookie.indexOf("MBSESSION=" + sessionToken_) < 0) return false;
+        if (!WebSessionPolicy::hasSessionCookie(
+                cookie.c_str(), sessionToken_.c_str())) {
+            return false;
+        }
         sessionLastActivityAt_ = now;
         return true;
     }
@@ -97,7 +101,9 @@ private:
 
         String supplied = server_.header("X-CSRF-Token");
         if (supplied.isEmpty() && server_.hasArg("csrf")) supplied = server_.arg("csrf");
-        if (csrfToken_.isEmpty() || supplied != csrfToken_) {
+        if (csrfToken_.isEmpty() ||
+            !WebSessionPolicy::csrfMatches(
+                supplied.c_str(), csrfToken_.c_str())) {
             server_.send(403, "text/plain", "CSRF validation failed");
             return false;
         }
@@ -652,9 +658,6 @@ private:
     SecurityStore* security_ = nullptr;
     NetworkService* network_ = nullptr;
     EventBus<32>* events_ = nullptr;
-    static constexpr uint32_t kSessionIdleTimeoutMs = 30UL * 60UL * 1000UL;
-    static constexpr uint32_t kSessionMaxLifetimeMs = 12UL * 60UL * 60UL * 1000UL;
-
     String sessionToken_;
     String csrfToken_;
     uint32_t sessionCreatedAt_ = 0;

@@ -91,6 +91,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/web_transport_policy_test.cpp -o /tmp/web_transport_policy_test
           /tmp/web_transport_policy_test
 
+      - name: Run Web session policy tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/web_session_policy_test.cpp -o /tmp/web_session_policy_test
+          /tmp/web_session_policy_test
+
       - name: Run Core command bus tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/command_bus_test.cpp -o /tmp/command_bus_test
