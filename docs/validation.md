@@ -130,9 +130,17 @@ Validate:
 
 ## Web security
 
-Validate/harden:
+Password-KDF software hardening is implemented:
 
-- password KDF/work factor
+- PBKDF2-HMAC-SHA256 parameters are explicitly versioned with each new administrator password hash
+- legacy hashes without metadata retain compatibility as PBKDF2-HMAC-SHA256/120,000
+- unsupported algorithms and out-of-range iteration counts fail closed
+- KDF policy is host-tested
+- the current 120,000-iteration work factor is intentionally unchanged pending target-hardware timing
+
+Still validate/harden:
+
+- benchmark administrator-login KDF latency on the target ESP32-S3 and adjust the current work factor only from measured data
 - HTTPS/certificate strategy
 
 ## KiCad / PCB release

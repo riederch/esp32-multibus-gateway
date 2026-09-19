@@ -5,6 +5,8 @@
 #include <esp_system.h>
 #include <mbedtls/md.h>
 
+#include "core/PasswordKdfPolicy.h"
+
 namespace multibus {
 
 class SecurityStore {
@@ -20,10 +22,12 @@ public:
         if (!prefs_.isKey("admin_hash")) {
             initialAdminPassword_ = generateSecret(16);
             const String salt = generateHex(16);
-            const String hash = pbkdf2Sha256(initialAdminPassword_, salt, kIterations);
+            const String hash = pbkdf2Sha256(initialAdminPassword_, salt, PasswordKdfPolicy::kCurrentIterations);
             if (hash.isEmpty()) return false;
             prefs_.putString("admin_salt", salt);
             prefs_.putString("admin_hash", hash);
+            prefs_.putString("admin_kdf", PasswordKdfPolicy::kAlgorithm);
+            prefs_.putUInt("admin_iter", PasswordKdfPolicy::kCurrentIterations);
             prefs_.putBool("admin_init", false);
         }
 
@@ -51,19 +55,30 @@ public:
     bool verifyAdminPassword(const String& password) const {
         const String salt = prefs_.getString("admin_salt", "");
         const String expected = prefs_.getString("admin_hash", "");
+        const String storedAlgorithm = prefs_.getString("admin_kdf", "");
+        const uint32_t storedIterations = prefs_.getUInt("admin_iter", 0);
         if (salt.isEmpty() || expected.isEmpty()) return false;
-        const String actual = pbkdf2Sha256(password, salt, kIterations);
+
+        const char* algorithm =
+            PasswordKdfPolicy::storedOrLegacyAlgorithm(storedAlgorithm.c_str());
+        const uint32_t iterations =
+            PasswordKdfPolicy::storedOrLegacyIterations(storedIterations);
+        if (!PasswordKdfPolicy::isSupported(algorithm, iterations)) return false;
+
+        const String actual = pbkdf2Sha256(password, salt, iterations);
         return constantTimeEquals(actual, expected);
     }
 
     bool setAdminPassword(const String& password) {
         if (password.length() < 10) return false;
         const String salt = generateHex(16);
-        const String hash = pbkdf2Sha256(password, salt, kIterations);
+        const String hash = pbkdf2Sha256(password, salt, PasswordKdfPolicy::kCurrentIterations);
         if (hash.isEmpty()) return false;
 
         prefs_.putString("admin_salt", salt);
         prefs_.putString("admin_hash", hash);
+        prefs_.putString("admin_kdf", PasswordKdfPolicy::kAlgorithm);
+        prefs_.putUInt("admin_iter", PasswordKdfPolicy::kCurrentIterations);
         prefs_.putBool("admin_init", true);
         initialAdminPassword_ = "";
         return true;
@@ -75,8 +90,6 @@ public:
     }
 
 private:
-    static constexpr uint32_t kIterations = 120000;
-
     static String generateSecret(size_t length) {
         static constexpr char alphabet[] =
             "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";

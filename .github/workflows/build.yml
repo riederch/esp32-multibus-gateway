@@ -81,6 +81,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/login_throttle_test.cpp -o /tmp/login_throttle_test
           /tmp/login_throttle_test
 
+      - name: Run password KDF policy tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/password_kdf_policy_test.cpp -o /tmp/password_kdf_policy_test
+          /tmp/password_kdf_policy_test
+
       - name: Run Core command bus tests
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/command_bus_test.cpp -o /tmp/command_bus_test
