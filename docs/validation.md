@@ -141,7 +141,8 @@ Password-KDF software hardening is implemented:
 Still validate/harden:
 
 - benchmark administrator-login KDF latency on the target ESP32-S3 and adjust the current work factor only from measured data
-- HTTPS/certificate strategy
+- implement the HTTPS transport and certificate lifecycle defined in `docs/https-certificate-strategy.md`
+- measure HTTPS heap/connection limits and validate certificate replacement/session behavior on target hardware
 
 ## KiCad / PCB release
 
