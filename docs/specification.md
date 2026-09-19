@@ -297,6 +297,23 @@ cannot force repeated NVS writes and flash wear. A device reboot resets the
 current penalty tier.
 
 
+### Encrypted backups
+
+New configuration exports are passphrase-protected. The portable plaintext
+backup JSON is generated only in RAM and wrapped using:
+
+- PBKDF2-HMAC-SHA256, 150,000 iterations
+- 128-bit random salt
+- AES-256-GCM
+- 96-bit random nonce
+- 128-bit authentication tag
+- authenticated format identifier as AEAD additional data
+
+Export requires a passphrase of at least 12 characters. The passphrase is not
+stored on the device. Existing legacy plaintext backup files remain importable
+for migration, but the Web UI no longer creates new plaintext backups.
+
+
 ### Client mode
 
 Connect to a configured WLAN and expose the Web UI through IP address and mDNS hostname.
