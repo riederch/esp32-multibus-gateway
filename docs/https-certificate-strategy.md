@@ -101,13 +101,14 @@ Use Espressif's native `esp_https_server` / HTTP server stack. This keeps TLS on
 
 The migration should be staged:
 
-1. separate Web UI request/business logic from the Arduino `WebServer` transport;
-2. add an ESP-IDF HTTP/HTTPS adapter with equivalent request-header access;
-3. preserve all current authentication, CSRF, login-throttle, backup and event semantics;
-4. add certificate-store validation and atomic certificate activation;
-5. enable HTTPS for station mode and mark cookies `Secure`;
-6. retain only the explicitly scoped commissioning-AP HTTP exception;
-7. add host tests for transport/security policy and target-device integration tests for TLS handshake, certificate replacement and session behavior.
+1. enforce the host-tested `WebTransportPolicy` contract for commissioning HTTP, legacy station HTTP redirects and station HTTPS;
+2. separate Web UI request/business logic from the Arduino `WebServer` transport;
+3. add an ESP-IDF HTTP/HTTPS adapter with equivalent request-header access;
+4. preserve all current authentication, CSRF, login-throttle, backup and event semantics;
+5. add certificate-store validation and atomic certificate activation;
+6. enable HTTPS for station mode and mark cookies `Secure`;
+7. retain only the explicitly scoped commissioning-AP HTTP exception;
+8. add target-device integration tests for TLS handshake, certificate replacement and session behavior.
 
 Do not run two independent administration implementations with divergent authorization logic. The transport adapter must feed the same Web-service behavior.
 
@@ -124,3 +125,7 @@ Software implementation is not complete until target-device testing covers:
 - commissioning-AP exception boundaries;
 - session cookie `Secure` behavior;
 - reboot/power-loss during certificate replacement.
+
+### Transport-policy contract
+
+`include/core/WebTransportPolicy.h` captures the intended transition without depending on Arduino networking classes. It defines that authenticated administration is permitted for commissioning HTTP and station HTTPS, while legacy station HTTP is redirect-only. It also defines the expected administration port, mDNS service and Secure-cookie requirement for each mode. The policy is host-tested and must be consumed by the eventual transport adapter rather than duplicated there.
