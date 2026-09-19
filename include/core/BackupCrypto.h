@@ -188,7 +188,7 @@ public:
     }
 
     static bool isEncryptedEnvelope(const String& input) {
-        return input.indexOf(""format"") >= 0 &&
+        return input.indexOf("\"format\"") >= 0 &&
                input.indexOf("multibus-backup-encrypted") >= 0;
     }
 
