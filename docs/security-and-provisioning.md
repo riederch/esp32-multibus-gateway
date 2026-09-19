@@ -38,7 +38,18 @@ After the change:
 - the initial password is invalidated permanently
 - the initial password is no longer displayed
 - the new administrator password is stored only as a salted password hash
+- the password-hash record stores an explicit KDF identifier and iteration count
+- legacy records without KDF metadata are interpreted as the original PBKDF2-HMAC-SHA256/120,000 format
+- unsupported KDF identifiers or iteration counts outside the accepted safety bounds are rejected instead of being guessed
 - no API or diagnostic interface may expose the clear-text administrator password
+
+### Administrator password KDF
+
+Administrator passwords use PBKDF2-HMAC-SHA256 with a per-password random 128-bit salt. The current work factor remains **120,000 iterations** until login latency is benchmarked on the target ESP32-S3 hardware.
+
+The work factor is deliberately versioned with each password record so it can be increased later without invalidating existing installations. PBKDF2's working memory is effectively constant for this implementation; CPU time scales approximately linearly with the iteration count. For that reason the firmware does not adopt desktop-oriented iteration counts without target-device timing data.
+
+The verifier accepts only the known KDF identifier and a bounded iteration range. This prevents corrupted or unexpected persisted metadata from causing uncontrolled work during authentication.
 
 ## Wi-Fi commissioning mode
 
